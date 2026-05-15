@@ -12,5 +12,19 @@ namespace IntelliJob
         protected void Application_Start(object sender, EventArgs e)
         {
         }
+
+        protected void Application_BeginRequest(object sender, EventArgs e)
+        {
+            if (Request == null)
+                return;
+
+            string requestPath = Request.AppRelativeCurrentExecutionFilePath;
+            if (string.Equals(requestPath, "~/", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(requestPath, "~/Default.aspx", StringComparison.OrdinalIgnoreCase))
+            {
+                Response.Redirect("~/User/Home.aspx", false);
+                Context.ApplicationInstance.CompleteRequest();
+            }
+        }
     }
 }

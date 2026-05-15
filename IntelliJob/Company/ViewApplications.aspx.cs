@@ -8,6 +8,7 @@ using System.Web;
 using System.Web.UI;
 using System.Web.UI.WebControls;
 using System.Drawing;
+using IntelliJob;
 
 namespace IntelliJob.Company
 {
@@ -57,6 +58,7 @@ namespace IntelliJob.Company
                 SELECT 
                     ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS [Sr.No],
                     aj.AppliedJobId,
+                    aj.UserId AS CandidateUserId,
                     aj.JobId,
                     j.Title,
                     js.Mobile,
@@ -81,8 +83,97 @@ namespace IntelliJob.Company
             SqlDataAdapter sda = new SqlDataAdapter(cmd);
             dt = new DataTable();
             sda.Fill(dt);
+            AddScoreColumns(dt);
             GridView1.DataSource = dt;
             GridView1.DataBind();
+        }
+
+        private void AddScoreColumns(DataTable table)
+        {
+            if (table == null)
+                return;
+
+            if (!table.Columns.Contains("InterviewScoreDisplay"))
+                table.Columns.Add("InterviewScoreDisplay", typeof(string));
+            if (!table.Columns.Contains("ResumeSuitabilityDisplay"))
+                table.Columns.Add("ResumeSuitabilityDisplay", typeof(string));
+            if (!table.Columns.Contains("TotalScoreDisplay"))
+                table.Columns.Add("TotalScoreDisplay", typeof(string));
+
+            foreach (DataRow row in table.Rows)
+            {
+                int? interviewScore = GetInterviewScore(Convert.ToInt32(row["AppliedJobId"]));
+                int? resumeSuitabilityScore = GetResumeSuitabilityScore(Convert.ToInt32(row["CandidateUserId"]), Convert.ToInt32(row["AppliedJobId"]));
+
+                int? totalScore = null;
+                if (interviewScore.HasValue && resumeSuitabilityScore.HasValue)
+                {
+                    int interviewValue = interviewScore.Value;
+                    int resumeValue = resumeSuitabilityScore.Value;
+                    totalScore = (int)Math.Round((interviewValue + resumeValue) / 2.0, MidpointRounding.AwayFromZero);
+                }
+                else if (interviewScore.HasValue)
+                {
+                    totalScore = interviewScore.Value;
+                }
+                else if (resumeSuitabilityScore.HasValue)
+                {
+                    totalScore = resumeSuitabilityScore.Value;
+                }
+                else
+                {
+                    totalScore = 0;
+                }
+
+                row["InterviewScoreDisplay"] = interviewScore.HasValue ? interviewScore.Value + "%" : "Pending";
+                row["ResumeSuitabilityDisplay"] = resumeSuitabilityScore.HasValue ? resumeSuitabilityScore.Value + "%" : "Pending";
+                row["TotalScoreDisplay"] = totalScore.Value + "%";
+            }
+        }
+
+        private int? GetInterviewScore(int appliedJobId)
+        {
+            using (SqlConnection c = new SqlConnection(str))
+            using (SqlCommand cmdScore = new SqlCommand(@"SELECT TOP 1 f.TotalScore
+                                                         FROM Interviews i
+                                                         INNER JOIN InterviewFeedback f ON i.InterviewId = f.InterviewId
+                                                         WHERE i.AppliedJobId = @AppliedJobId
+                                                         ORDER BY i.CreatedAt DESC", c))
+            {
+                cmdScore.Parameters.AddWithValue("@AppliedJobId", appliedJobId);
+                c.Open();
+                object result = cmdScore.ExecuteScalar();
+                return result == null || result == DBNull.Value ? (int?)null : Convert.ToInt32(result);
+            }
+        }
+
+        private int? GetResumeSuitabilityScore(int candidateUserId, int appliedJobId)
+        {
+            ResumeEnhancementReportRecord report;
+            if (ApplicationDataStore.TryGetResumeEnhancementReport(candidateUserId, appliedJobId, out report) && report != null)
+            {
+                if (report.Result != null)
+                    return report.Result.OverallScore;
+            }
+
+            return null;
+        }
+
+        public string GetScoreBadge(object score)
+        {
+            if (score == null || score == DBNull.Value)
+                return "<span class='score-badge score-none'>Pending</span>";
+
+            string text = score.ToString();
+            if (string.IsNullOrWhiteSpace(text))
+                return "<span class='score-badge score-none'>Pending</span>";
+
+            int value;
+            if (!int.TryParse(text.Replace("%", string.Empty).Trim(), out value))
+                return "<span class='score-badge score-none'>Pending</span>";
+
+            string css = value >= 70 ? "score-high" : value >= 40 ? "score-mid" : "score-low";
+            return "<span class='score-badge " + css + "'>" + value + "%</span>";
         }
 
         protected void GridView1_PageIndexChanging(object sender, GridViewPageEventArgs e)
@@ -100,6 +191,24 @@ namespace IntelliJob.Company
                 con.Open();
                 using (SqlTransaction tran = con.BeginTransaction())
                 {
+                    int userId = 0;
+                    int jobId = 0;
+                    using (SqlCommand contextCmd = new SqlCommand("SELECT UserId, JobId FROM AppliedJobs WHERE AppliedJobId = @id", con, tran))
+                    {
+                        contextCmd.Parameters.AddWithValue("@id", AppliedjobId);
+                        using (SqlDataReader contextReader = contextCmd.ExecuteReader())
+                        {
+                            if (contextReader.Read())
+                            {
+                                userId = Convert.ToInt32(contextReader["UserId"]);
+                                jobId = Convert.ToInt32(contextReader["JobId"]);
+                            }
+                        }
+                    }
+
+                    if (userId > 0 && jobId > 0)
+                        ApplicationDataStore.ClearApplicationResumeState(userId, jobId);
+
                     using (SqlCommand deleteInvitations = new SqlCommand("DELETE FROM InterviewInvitations WHERE AppliedJobId = @id", con, tran))
                     {
                         deleteInvitations.Parameters.AddWithValue("@id", AppliedjobId);

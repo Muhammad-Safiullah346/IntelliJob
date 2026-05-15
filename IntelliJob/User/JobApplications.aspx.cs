@@ -103,25 +103,51 @@ namespace IntelliJob.User
 
         protected string GetImageUrl(object url)
         {
-            string url1 = "";
             if (url == null || url == DBNull.Value || string.IsNullOrEmpty(url.ToString()))
             {
-                url1 = "~/Images/No_image.png";
+                return ResolveUrl("~/Images/No_image.png");
             }
-            else
+
+            string logoPath = url.ToString().Trim();
+            if (string.IsNullOrWhiteSpace(logoPath))
             {
-                string logoPath = url.ToString();
-                if (logoPath.IndexOf('/') == -1 && logoPath.IndexOf('\\') == -1)
+                return ResolveUrl("~/Images/No_image.png");
+            }
+
+            // If it's a full URL, return as-is
+            if (logoPath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || logoPath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                return logoPath;
+            }
+
+            // Normalize the path
+            string normalizedPath = logoPath.StartsWith("~/", StringComparison.OrdinalIgnoreCase)
+                ? logoPath
+                : "~/" + logoPath.TrimStart('~', '/');
+
+            // Try multiple path candidates to find the file
+            string[] candidates = new[]
+            {
+                normalizedPath,
+                "~/Images/" + logoPath.TrimStart('~', '/'),
+                "~/photos/" + logoPath.TrimStart('~', '/')
+            };
+
+            foreach (string candidate in candidates)
+            {
+                try
                 {
-                    url1 = string.Format("~/Images/{0}", logoPath);
+                    if (System.IO.File.Exists(Server.MapPath(candidate)))
+                    {
+                        return ResolveUrl(candidate);
+                    }
                 }
-                else
+                catch
                 {
-                    url1 = string.Format("~/{0}", logoPath);
                 }
             }
 
-            return ResolveUrl(url1);
+            return ResolveUrl("~/Images/No_image.png");
         }
 
         public string GetScoreBadge(object score)

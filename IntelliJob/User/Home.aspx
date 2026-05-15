@@ -39,7 +39,7 @@
                         <div class="cv-caption text-center">
                             <p class="pera1">FEATURED RESUME ENHANCER</p>
                             <p class="pera2">Make a Difference with Your Online Resume!</p>
-                                                        <a href="#" class="border-btn2 border-btn4">Upload your cv</a>
+                                                        <a href="Profile.aspx" class="border-btn2 border-btn4">Upload your cv</a>
 
                             <%--                            <div class="main-body">
                                 <asp:DataList ID="lbRegisterOrResume" runat="server" Width="100%" OnItemCommand="lbRegisterOrResume_ItemCommand">
@@ -93,7 +93,7 @@
                                 <div class="job-items">
                                     <div class="company-img">
                                         <a href='JobDetails.aspx?id=<%# Eval("JobId") %>'>
-                                            <img src='../Images/CompanyLogo/<%# Eval("CompanyImage") %>' 
+                                            <img src='<%# GetImageUrl(Eval("CompanyImage")) %>' 
                                                  alt='<%# Eval("CompanyName") %>' 
                                                  style="max-width: 60px; max-height: 60px;">
                                         </a>
@@ -305,7 +305,7 @@
                             </div>
                             <div class="support-caption">
                                 <p class="pera-top">
-                                    Welcome to Online Job Portal, where we connect talented job seekers with leading employers for a seamless career journey. Discover your dream job with us today!
+                                    Welcome to IntelliJob, where we connect talented job seekers with leading employers for a seamless career journey. Discover your dream job with us today!
                                     <p>At this portal, we offer a comprehensive platform with the latest job listings and company profiles to help you find the perfect match. Whether you're advancing your career or starting fresh, our resources and support are here to guide you every step of the way. Join us and unlock your potential!</p>
                                     <a href="JobListing.aspx" class="btn post-btn">Search for job</a>
                             </div>

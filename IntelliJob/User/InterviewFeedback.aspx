@@ -326,7 +326,7 @@
         }
 
         .action-buttons .btn-retake {
-            background: linear-gradient(135deg, #FF4357 0%, #ff6b7a 100%);
+            background: #fb246a;
             color: #fff;
             border: none;
             border-radius: 8px;
@@ -410,7 +410,7 @@
 
                         <!-- Overall Impression -->
                         <div class="score-card" style="display: flex; align-items: center; justify-content: center; gap: 30px; margin-bottom: 25px; padding: 20px;">
-
+                            
                             <div class="feedback-meta" style="margin-bottom: 0;">
                                 <div class="meta-item" style="font-size: 18px;">
                                     <i class="fas fa-star" style="color: #FF4357; font-size: 20px; margin-right: 8px;"></i>
@@ -473,10 +473,10 @@
 
                         <!-- Re-evaluate: always visible for completed interviews with transcript -->
                         <div style="text-align:center; margin-top:20px;">
-                            <asp:Button ID="btnReEvaluate" runat="server" Text="Re-evaluate Interview"
-                                OnClick="btnRegenerate_Click"
-                                CssClass="btn-action primary" style="display:inline-block; cursor:pointer; padding: 12px 24px; border-radius: 8px; background: #2d3436; color: #fff; border: none; font-weight: 600;"
-                                OnClientClick="this.disabled=true;this.value='Re-evaluating... please wait up to 60s';"
+                            <asp:Button ID="btnReEvaluate" runat="server" Text="Re-evaluate Interview" 
+                                OnClick="btnRegenerate_Click" 
+                                CssClass="btn-action primary" style="display:inline-block; cursor:pointer; padding: 12px 24px; border-radius: 8px; background: #2d3436; color: #fff; border: none; font-weight: 600;" 
+                                OnClientClick="this.disabled=true;this.value='Re-evaluating... please wait up to 60s';" 
                                 UseSubmitBehavior="false" />
                             <p style="color:#b2bec3; font-size:12px; margin-top:6px;">Resubmit the same transcript for a fresh AI evaluation</p>
                         </div>
@@ -488,10 +488,10 @@
                                     <i class="fas fa-exclamation-triangle"></i>
                                     Feedback generation failed (likely due to API rate limits). You can retry without retaking the interview.
                                 </p>
-                                <asp:Button ID="btnRegenerate" runat="server" Text="Regenerate AI Feedback"
-                                    OnClick="btnRegenerate_Click"
-                                    CssClass="btn-retake" style="display:inline-block;"
-                                    OnClientClick="this.disabled=true;this.value='Generating... please wait up to 60s';"
+                                <asp:Button ID="btnRegenerate" runat="server" Text="Regenerate AI Feedback" 
+                                    OnClick="btnRegenerate_Click" 
+                                    CssClass="btn-retake" style="display:inline-block;" 
+                                    OnClientClick="this.disabled=true;this.value='Generating... please wait up to 60s';" 
                                     UseSubmitBehavior="false" />
                             </div>
                         </asp:Panel>

@@ -7,7 +7,11 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
+using System.Web;
 using System.Web.UI;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace IntelliJob.User
 {
@@ -32,6 +36,7 @@ namespace IntelliJob.User
                 return;
             }
 
+            BindEnhancerMonthDropdowns();
             if (!IsPostBack)
                 LoadEnhancement();
         }
@@ -86,12 +91,14 @@ namespace IntelliJob.User
                                         j.Title, j.CompanyName, j.Description, j.Specialization, j.Qualification, j.JobType, j.Experience,
                                         i.InterviewId, i.Role, i.Level, i.InterviewType, i.TechStack,
                                         fb.TotalScore, fb.FinalAssessment, fb.Strengths, fb.AreasForImprovement,
-                                        js.Resume, js.Name
+                                        js.Resume, js.Name, js.Mobile,
+                                        u.Email, u.Address
                                  FROM AppliedJobs aj
                                  INNER JOIN Jobs j ON aj.JobId = j.JobId
                                  LEFT JOIN Interviews i ON i.AppliedJobId = aj.AppliedJobId AND i.UserId = aj.UserId
                                  LEFT JOIN InterviewFeedback fb ON fb.InterviewId = i.InterviewId
                                  LEFT JOIN JobSeekers js ON js.ProfileId = aj.UserId
+                                 LEFT JOIN Users u ON u.UserId = aj.UserId
                                  WHERE aj.AppliedJobId = @AppliedJobId AND aj.UserId = @UserId";
 
                 using (SqlCommand cmd = new SqlCommand(query, con))
@@ -132,6 +139,7 @@ namespace IntelliJob.User
             DataRow row = dt.Rows[0];
             RenderReport(row, savedReport);
             BindEditablePreview(row, savedReport);
+            StorePreviewJson(savedReport);
             ReportLoaded = true;
             ShowReportLoadedStatus(savedReport.AppliedJobId, "Saved resume history loaded from your application record.");
 
@@ -148,11 +156,13 @@ namespace IntelliJob.User
                 string query = @"SELECT i.InterviewId, i.AppliedJobId, i.Role, i.Level, i.InterviewType, i.TechStack, i.JobId,
                                         j.Title, j.CompanyName, j.Description, j.Specialization, j.Qualification, j.JobType, j.Experience,
                                         fb.TotalScore, fb.FinalAssessment, fb.Strengths, fb.AreasForImprovement,
-                                        js.Resume, js.Name
+                                        js.Resume, js.Name, js.Mobile,
+                                        u.Email, u.Address
                                  FROM Interviews i
                                  INNER JOIN Jobs j ON i.JobId = j.JobId
                                  LEFT JOIN InterviewFeedback fb ON fb.InterviewId = i.InterviewId
                                  LEFT JOIN JobSeekers js ON js.ProfileId = i.UserId
+                                 LEFT JOIN Users u ON u.UserId = i.UserId
                                  WHERE i.InterviewId = @InterviewId AND i.UserId = @UserId";
 
                 using (SqlCommand cmd = new SqlCommand(query, con))
@@ -227,14 +237,21 @@ namespace IntelliJob.User
                     savedReport.ResumePath = resumePath;
 
                 RenderReport(row, savedReport);
+                BindEditablePreview(row, savedReport);
+                StorePreviewJson(savedReport);
+                ReportLoaded = true;
                 ShowReportLoadedStatus(savedReport.AppliedJobId, "Saved resume report loaded from your application history.");
+                RevealReportBody();
                 return;
             }
 
-            string resumeText = ResumeTextExtractor.ExtractText(resumePath);
+            ResumeProfileDocument resumeDocument = LoadResumeProfileDocumentForEnhancement(userId, appliedJobId, resumePath, row);
+            string resumeText = ResumeProfileService.BuildResumeText(resumeDocument);
+            if (string.IsNullOrWhiteSpace(resumeText) && resumeDocument != null && !string.IsNullOrWhiteSpace(resumeDocument.RawText))
+                resumeText = resumeDocument.RawText.Trim();
             if (string.IsNullOrWhiteSpace(resumeText))
             {
-                resumeText = "No readable resume text could be extracted from the stored resume file.";
+                resumeText = "No readable resume text could be extracted from the stored resume.";
                 ShowStatus("The resume was found, but its text could not be fully extracted. The enhancer still reviewed the available job and interview context.", false);
             }
 
@@ -291,8 +308,17 @@ namespace IntelliJob.User
             };
 
             ApplicationDataStore.SaveResumeEnhancementReport(report);
+
+            // Immediately persist the Gemini-structured JSON so the preview can display it
+            if (result.EnhancedResumeDocument != null)
+            {
+                report.UpdatedResumeStructuredJson = ResumeProfileService.SerializeDocument(result.EnhancedResumeDocument);
+                ApplicationDataStore.SaveResumeEnhancementReport(report);
+            }
+
             RenderReport(row, report);
             BindEditablePreview(row, report);
+            StorePreviewJson(report);
             ReportLoaded = true;
             ShowReportLoadedStatus(report.AppliedJobId, "This resume report has been saved to your application history.");
 
@@ -329,6 +355,152 @@ namespace IntelliJob.User
 
             originalFileName = Path.GetFileName(profileResumePath);
             return profileResumePath;
+        }
+
+        /// <summary>
+        /// Loads canonical resume JSON for Gemini and previews: prefers application resume-selection StructuredJson,
+        /// unwraps draft wrapper files (StoredResumePath pointing at resume-draft.json), and fills identity from DB when missing.
+        /// </summary>
+        private ResumeProfileDocument LoadResumeProfileDocumentForEnhancement(int userId, int appliedJobId, string resolvedResumeFilePath, DataRow profileRow)
+        {
+            ApplicationResumeSelection selection;
+            if (ApplicationDataStore.TryGetApplicationResumeSelection(userId, appliedJobId, out selection) &&
+                selection != null &&
+                !string.IsNullOrWhiteSpace(selection.StructuredJson))
+            {
+                ResumeProfileDocument doc = ResumeProfileService.DeserializeDocument(selection.StructuredJson) ?? new ResumeProfileDocument();
+                MergeProfileRowIntoDocument(doc, profileRow);
+                TryAppendRawTextFromDraftFile(doc, resolvedResumeFilePath);
+                return doc;
+            }
+
+            if (!string.IsNullOrWhiteSpace(resolvedResumeFilePath) && File.Exists(resolvedResumeFilePath))
+            {
+                string content = File.ReadAllText(resolvedResumeFilePath);
+                ResumeProfileDocument doc = DeserializeResumeFromStoredFileContent(content) ?? new ResumeProfileDocument();
+                MergeProfileRowIntoDocument(doc, profileRow);
+                TryMergeDraftRawTextFromWrapperJson(doc, content);
+                return doc;
+            }
+
+            ResumeProfileDocument empty = new ResumeProfileDocument();
+            MergeProfileRowIntoDocument(empty, profileRow);
+            return empty;
+        }
+
+        private static ResumeProfileDocument DeserializeResumeFromStoredFileContent(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return null;
+
+            try
+            {
+                JObject jo = JObject.Parse(content);
+                foreach (string key in new[] { "StructuredJson", "structuredJson" })
+                {
+                    JToken sj = jo[key];
+                    if (sj != null && sj.Type == JTokenType.String)
+                    {
+                        string inner = sj.Value<string>();
+                        if (!string.IsNullOrWhiteSpace(inner))
+                        {
+                            ResumeProfileDocument innerDoc = ResumeProfileService.DeserializeDocument(inner);
+                            if (innerDoc != null)
+                                return innerDoc;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to full-file deserialize
+            }
+
+            return ResumeProfileService.DeserializeDocument(content);
+        }
+
+        private static void TryAppendRawTextFromDraftFile(ResumeProfileDocument doc, string filePath)
+        {
+            if (doc == null || string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return;
+
+            try
+            {
+                string content = File.ReadAllText(filePath);
+                TryMergeDraftRawTextFromWrapperJson(doc, content);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static void TryMergeDraftRawTextFromWrapperJson(ResumeProfileDocument doc, string wrapperJson)
+        {
+            if (doc == null || string.IsNullOrWhiteSpace(wrapperJson))
+                return;
+
+            try
+            {
+                JObject jo = JObject.Parse(wrapperJson);
+                JToken raw = jo["RawText"] ?? jo["rawText"];
+                if (raw != null && raw.Type == JTokenType.String)
+                {
+                    string rt = raw.Value<string>();
+                    if (!string.IsNullOrWhiteSpace(rt) && string.IsNullOrWhiteSpace(doc.RawText))
+                        doc.RawText = rt.Trim();
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static void MergeProfileRowIntoDocument(ResumeProfileDocument doc, DataRow profileRow)
+        {
+            if (doc == null || profileRow == null || profileRow.Table == null)
+                return;
+
+            string name = ResumeEnhancerColumn(profileRow, "Name");
+            string email = ResumeEnhancerColumn(profileRow, "Email");
+            string mobile = ResumeEnhancerColumn(profileRow, "Mobile");
+            string address = ResumeEnhancerColumn(profileRow, "Address");
+
+            if (string.IsNullOrWhiteSpace(doc.FullName) && !string.IsNullOrWhiteSpace(name))
+                doc.FullName = name;
+
+            if (doc.PersonalInfo == null)
+                doc.PersonalInfo = new ResumePersonalInfo();
+
+            if (string.IsNullOrWhiteSpace(doc.PersonalInfo.FullName) && !string.IsNullOrWhiteSpace(name))
+                doc.PersonalInfo.FullName = name;
+
+            if (string.IsNullOrWhiteSpace(doc.Email) && !string.IsNullOrWhiteSpace(email))
+                doc.Email = email;
+
+            if (string.IsNullOrWhiteSpace(doc.PersonalInfo.Email) && !string.IsNullOrWhiteSpace(email))
+                doc.PersonalInfo.Email = email;
+
+            if (string.IsNullOrWhiteSpace(doc.Mobile) && !string.IsNullOrWhiteSpace(mobile))
+                doc.Mobile = mobile;
+
+            if (string.IsNullOrWhiteSpace(doc.PersonalInfo.Mobile) && !string.IsNullOrWhiteSpace(mobile))
+                doc.PersonalInfo.Mobile = mobile;
+
+            if (string.IsNullOrWhiteSpace(doc.Address) && !string.IsNullOrWhiteSpace(address))
+                doc.Address = address;
+
+            if (string.IsNullOrWhiteSpace(doc.PersonalInfo.Address) && !string.IsNullOrWhiteSpace(address))
+                doc.PersonalInfo.Address = address;
+        }
+
+        private static string ResumeEnhancerColumn(DataRow row, string columnName)
+        {
+            if (row.Table == null || !row.Table.Columns.Contains(columnName) || row[columnName] == DBNull.Value)
+                return string.Empty;
+
+            return row[columnName].ToString().Trim();
         }
 
         private void RenderReport(DataRow row, ResumeEnhancementReportRecord report)
@@ -447,10 +619,10 @@ namespace IntelliJob.User
             }
 
             ResumeProfileDocument fallback = GetCurrentEditableDocument();
-            ResumeProfileDocument document = BuildDocumentFromForm();
+            ResumeProfileDocument document = BuildStructuredDocumentFromForm();
             MergeDocumentDefaults(document, fallback);
 
-            string structuredText = BuildStructuredResumeText(document);
+            string structuredText = ResumeProfileService.BuildResumeText(document);
             bool isProfileResume = string.Equals(hfLoadedResumeSource.Value, "profile", StringComparison.OrdinalIgnoreCase);
             if (isProfileResume)
             {
@@ -467,7 +639,7 @@ namespace IntelliJob.User
             }
             else
             {
-                string originalFileName = string.IsNullOrWhiteSpace(report.JobTitle) ? "enhanced-resume.txt" : SanitizeFileName(report.JobTitle) + "-enhanced.txt";
+                string originalFileName = string.IsNullOrWhiteSpace(report.JobTitle) ? "enhanced-resume.json" : SanitizeFileName(report.JobTitle) + "-enhanced.json";
                 ApplicationResumeSelection selection = ApplicationDataStore.SaveApplicationResumeSelection(userId, appliedJobId, document, "enhanced-job", originalFileName);
                 if (selection == null || string.IsNullOrWhiteSpace(selection.StoredResumePath))
                 {
@@ -485,6 +657,7 @@ namespace IntelliJob.User
             if (report.Result == null)
                 report.Result = new ResumeEnhancementResult();
             report.Result.UpdatedResumeText = structuredText;
+            report.Result.EnhancedResumeDocument = document;
 
             ApplicationDataStore.SaveResumeEnhancementReport(report);
             PersistPreviewDocument(document);
@@ -502,7 +675,7 @@ namespace IntelliJob.User
             if (report == null)
                 return;
 
-            ResumeProfileDocument document = BuildEditableDocument(report);
+            ResumeProfileDocument document = BuildEditableDocument(report, row);
             if (document == null)
                 document = new ResumeProfileDocument();
 
@@ -516,18 +689,22 @@ namespace IntelliJob.User
             ViewState[CurrentDocumentViewStateKey] = ResumeProfileService.SerializeDocument(document);
         }
 
-        private ResumeProfileDocument BuildEditableDocument(ResumeEnhancementReportRecord report)
+        private ResumeProfileDocument BuildEditableDocument(ResumeEnhancementReportRecord report, DataRow profileRow = null)
         {
             if (report == null)
                 return new ResumeProfileDocument();
 
-            // Prefer the structured JSON which preserves exact user edits
+            // 1. Prefer the saved structured JSON (exact user edits)
             if (!string.IsNullOrWhiteSpace(report.UpdatedResumeStructuredJson))
             {
                 ResumeProfileDocument fromJson = ResumeProfileService.DeserializeDocument(report.UpdatedResumeStructuredJson);
                 if (fromJson != null && HasPreviewContent(fromJson))
                     return fromJson;
             }
+
+            // 2. Use the Gemini-produced structured document if available
+            if (report.Result?.EnhancedResumeDocument != null && HasPreviewContent(report.Result.EnhancedResumeDocument))
+                return report.Result.EnhancedResumeDocument;
 
             string originalFileName = string.IsNullOrWhiteSpace(report.ResumePath)
                 ? string.Empty
@@ -540,8 +717,9 @@ namespace IntelliJob.User
             ResumeProfileDocument document = ResumeProfileService.ParseRawText(previewText, originalFileName);
             if (!HasPreviewContent(document) && !string.IsNullOrWhiteSpace(report.ResumePath) && File.Exists(report.ResumePath))
             {
-                string extractedText = ResumeTextExtractor.ExtractText(report.ResumePath);
-                document = ResumeProfileService.ParseRawText(extractedText, originalFileName);
+                ResumeProfileDocument jsonDocument = LoadResumeProfileDocumentForEnhancement(report.UserId, report.AppliedJobId, report.ResumePath, profileRow);
+                if (jsonDocument != null && HasPreviewContent(jsonDocument))
+                    document = jsonDocument;
             }
 
             if (document == null)
@@ -564,6 +742,14 @@ namespace IntelliJob.User
                    || !string.IsNullOrWhiteSpace(document.Address)
                    || !string.IsNullOrWhiteSpace(document.Headline)
                    || !string.IsNullOrWhiteSpace(document.Summary)
+                   || !string.IsNullOrWhiteSpace(document.ProfessionalSummary)
+                   || (document.PersonalInfo != null && !string.IsNullOrWhiteSpace(document.PersonalInfo.Country))
+                   || (document.EducationDetails != null && document.EducationDetails.Count > 0)
+                   || (document.ExperienceDetails != null && document.ExperienceDetails.Count > 0)
+                   || (document.ProjectDetails != null && document.ProjectDetails.Count > 0)
+                   || (document.SkillGroups != null && (
+                           (document.SkillGroups.ProgrammingLanguages != null && document.SkillGroups.ProgrammingLanguages.Count > 0)
+                           || (document.SkillGroups.FrameworksLibraries != null && document.SkillGroups.FrameworksLibraries.Count > 0)))
                    || (document.Skills != null && document.Skills.Count > 0)
                    || (document.Education != null && document.Education.Count > 0)
                    || (document.Experience != null && document.Experience.Count > 0)
@@ -574,20 +760,7 @@ namespace IntelliJob.User
 
         private void PopulateEditablePreview(ResumeProfileDocument document)
         {
-            txtEnhFullName.Text = document != null ? document.FullName : string.Empty;
-            txtEnhEmail.Text = document != null ? document.Email : string.Empty;
-            txtEnhMobile.Text = document != null ? document.Mobile : string.Empty;
-            txtEnhAddress.Text = document != null ? document.Address : string.Empty;
-            txtEnhHeadline.Text = document != null ? document.Headline : string.Empty;
-            txtEnhSummary.Text = document != null ? document.Summary : string.Empty;
-            txtEnhSkills.Text = JoinLines(document != null ? document.Skills : null);
-            txtEnhEducation.Text = JoinLines(document != null ? document.Education : null);
-            txtEnhExperience.Text = JoinLines(document != null ? document.Experience : null);
-            txtEnhProjects.Text = JoinLines(document != null ? document.Projects : null);
-            txtEnhCertifications.Text = JoinLines(document != null ? document.Certifications : null);
-            txtEnhLanguages.Text = JoinLines(document != null ? document.Languages : null);
-            txtEnhLinkedIn.Text = document != null ? document.LinkedInUrl : string.Empty;
-            txtEnhPortfolio.Text = document != null ? document.PortfolioUrl : string.Empty;
+            PopulateStructuredPreview(document);
         }
 
         private ResumeProfileDocument GetCurrentEditableDocument()
@@ -595,32 +768,6 @@ namespace IntelliJob.User
             string json = ViewState[CurrentDocumentViewStateKey] as string;
             ResumeProfileDocument document = ResumeProfileService.DeserializeDocument(json);
             return document ?? new ResumeProfileDocument();
-        }
-
-        private ResumeProfileDocument BuildDocumentFromForm()
-        {
-            return new ResumeProfileDocument
-            {
-                FullName = txtEnhFullName.Text.Trim(),
-                Email = txtEnhEmail.Text.Trim(),
-                Mobile = txtEnhMobile.Text.Trim(),
-                Address = txtEnhAddress.Text.Trim(),
-                Headline = txtEnhHeadline.Text.Trim(),
-                Summary = txtEnhSummary.Text.Trim(),
-                Skills = SplitLines(txtEnhSkills.Text),
-                Education = SplitLines(txtEnhEducation.Text),
-                Experience = SplitLines(txtEnhExperience.Text),
-                Projects = SplitLines(txtEnhProjects.Text),
-                Certifications = SplitLines(txtEnhCertifications.Text),
-                Languages = SplitLines(txtEnhLanguages.Text),
-                LinkedInUrl = txtEnhLinkedIn.Text.Trim(),
-                PortfolioUrl = txtEnhPortfolio.Text.Trim(),
-                RawText = GetCurrentEditableDocument().RawText,
-                OriginalFileName = hfLoadedOriginalFileName.Value,
-                StoredFilePath = hfLoadedResumePath.Value,
-                ParsedAt = DateTime.UtcNow,
-                IsValid = true
-            };
         }
 
         private void MergeDocumentDefaults(ResumeProfileDocument target, ResumeProfileDocument fallback)
@@ -634,6 +781,28 @@ namespace IntelliJob.User
             if (string.IsNullOrWhiteSpace(target.Address)) target.Address = fallback.Address;
             if (string.IsNullOrWhiteSpace(target.Headline)) target.Headline = fallback.Headline;
             if (string.IsNullOrWhiteSpace(target.Summary)) target.Summary = fallback.Summary;
+            if (string.IsNullOrWhiteSpace(target.ProfessionalSummary)) target.ProfessionalSummary = fallback.ProfessionalSummary;
+            if (target.PersonalInfo == null) target.PersonalInfo = new ResumePersonalInfo();
+            if (fallback.PersonalInfo != null)
+            {
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.Country)) target.PersonalInfo.Country = fallback.PersonalInfo.Country;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.FullName)) target.PersonalInfo.FullName = fallback.PersonalInfo.FullName;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.Email)) target.PersonalInfo.Email = fallback.PersonalInfo.Email;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.Mobile)) target.PersonalInfo.Mobile = fallback.PersonalInfo.Mobile;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.Address)) target.PersonalInfo.Address = fallback.PersonalInfo.Address;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.LinkedInUrl)) target.PersonalInfo.LinkedInUrl = fallback.PersonalInfo.LinkedInUrl;
+                if (string.IsNullOrWhiteSpace(target.PersonalInfo.PortfolioUrl)) target.PersonalInfo.PortfolioUrl = fallback.PersonalInfo.PortfolioUrl;
+            }
+
+            if (target.EducationDetails == null || target.EducationDetails.Count == 0)
+                target.EducationDetails = fallback.EducationDetails != null ? new List<ResumeEducationEntry>(fallback.EducationDetails) : target.EducationDetails;
+            if (target.ExperienceDetails == null || target.ExperienceDetails.Count == 0)
+                target.ExperienceDetails = fallback.ExperienceDetails != null ? new List<ResumeExperienceEntry>(fallback.ExperienceDetails) : target.ExperienceDetails;
+            if (target.ProjectDetails == null || target.ProjectDetails.Count == 0)
+                target.ProjectDetails = fallback.ProjectDetails != null ? new List<ResumeProjectEntry>(fallback.ProjectDetails) : target.ProjectDetails;
+            if (target.SkillGroups == null || IsSkillGroupsEmpty(target.SkillGroups))
+                target.SkillGroups = CloneSkillGroups(fallback.SkillGroups);
+
             if (target.Skills == null || target.Skills.Count == 0) target.Skills = fallback.Skills;
             if (target.Education == null || target.Education.Count == 0) target.Education = fallback.Education;
             if (target.Experience == null || target.Experience.Count == 0) target.Experience = fallback.Experience;
@@ -647,37 +816,31 @@ namespace IntelliJob.User
             if (string.IsNullOrWhiteSpace(target.StoredFilePath)) target.StoredFilePath = fallback.StoredFilePath;
         }
 
-        private string BuildStructuredResumeText(ResumeProfileDocument document)
+        private static bool IsSkillGroupsEmpty(ResumeSkillGroups g)
         {
-            if (document == null)
-                return string.Empty;
-
-            StringBuilder builder = new StringBuilder();
-            AppendSection(builder, "Full Name", document.FullName);
-            AppendSection(builder, "Email", document.Email);
-            AppendSection(builder, "Mobile", document.Mobile);
-            AppendSection(builder, "Address", document.Address);
-            AppendSection(builder, "Headline", document.Headline);
-            AppendSection(builder, "Summary", document.Summary);
-            AppendSection(builder, "Skills", JoinLines(document.Skills));
-            AppendSection(builder, "Education", JoinLines(document.Education));
-            AppendSection(builder, "Experience", JoinLines(document.Experience));
-            AppendSection(builder, "Projects", JoinLines(document.Projects));
-            AppendSection(builder, "Certifications", JoinLines(document.Certifications));
-            AppendSection(builder, "Languages", JoinLines(document.Languages));
-            AppendSection(builder, "LinkedIn", document.LinkedInUrl);
-            AppendSection(builder, "Portfolio", document.PortfolioUrl);
-            return builder.ToString().Trim();
+            if (g == null)
+                return true;
+            return (g.ProgrammingLanguages == null || g.ProgrammingLanguages.Count == 0)
+                   && (g.FrameworksLibraries == null || g.FrameworksLibraries.Count == 0)
+                   && (g.ToolsCloudDatabaseSkills == null || g.ToolsCloudDatabaseSkills.Count == 0)
+                   && (g.SoftSkillsLanguages == null || g.SoftSkillsLanguages.Count == 0)
+                   && string.IsNullOrWhiteSpace(g.CustomHeading)
+                   && (g.CustomItems == null || g.CustomItems.Count == 0);
         }
 
-        private void AppendSection(StringBuilder builder, string heading, string content)
+        private static ResumeSkillGroups CloneSkillGroups(ResumeSkillGroups g)
         {
-            if (builder == null || string.IsNullOrWhiteSpace(content))
-                return;
-
-            builder.AppendLine(heading + ":");
-            builder.AppendLine(content.Trim());
-            builder.AppendLine();
+            if (g == null)
+                return null;
+            return new ResumeSkillGroups
+            {
+                ProgrammingLanguages = g.ProgrammingLanguages != null ? new List<string>(g.ProgrammingLanguages) : new List<string>(),
+                FrameworksLibraries = g.FrameworksLibraries != null ? new List<string>(g.FrameworksLibraries) : new List<string>(),
+                ToolsCloudDatabaseSkills = g.ToolsCloudDatabaseSkills != null ? new List<string>(g.ToolsCloudDatabaseSkills) : new List<string>(),
+                SoftSkillsLanguages = g.SoftSkillsLanguages != null ? new List<string>(g.SoftSkillsLanguages) : new List<string>(),
+                CustomHeading = g.CustomHeading,
+                CustomItems = g.CustomItems != null ? new List<string>(g.CustomItems) : new List<string>()
+            };
         }
 
         private string SaveEnhancedProfileResume(int userId, ResumeProfileDocument document)
@@ -688,9 +851,9 @@ namespace IntelliJob.User
             string folder = Server.MapPath("~/Resumes");
             Directory.CreateDirectory(folder);
 
-            string fileName = "enhanced-profile-" + userId + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + ".txt";
+            string fileName = "enhanced-profile-" + userId + "-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + ".json";
             string physicalPath = Path.Combine(folder, fileName);
-            File.WriteAllText(physicalPath, BuildStructuredResumeText(document));
+            File.WriteAllText(physicalPath, ResumeProfileService.SerializeDocument(document));
 
             string relativePath = "Resumes/" + fileName;
 
@@ -718,29 +881,20 @@ namespace IntelliJob.User
                     string jobSeekerQuery;
                     if (profileExists)
                     {
-                        jobSeekerQuery = @"UPDATE JobSeekers SET Name=@Name, Mobile=@Mobile, WorksOn=@WorksOn, Experience=@Experience,
-                                            Resume=@Resume, ResumeOriginalFileName=@ResumeOriginalFileName, ResumeParseStatus=@ResumeParseStatus,
-                                            ResumeValidationMessage=@ResumeValidationMessage, ResumeUploadedAt=@ResumeUploadedAt, ResumeParsedAt=@ResumeParsedAt,
-                                            ResumeStructuredJson=@ResumeStructuredJson, ResumeRawText=@ResumeRawText, ResumeHeadline=@ResumeHeadline,
-                                            ResumeSummary=@ResumeSummary, ResumeSkills=@ResumeSkills, ResumeEducation=@ResumeEducation,
-                                            ResumeExperienceDetails=@ResumeExperienceDetails, ResumeProjects=@ResumeProjects,
-                                            ResumeCertifications=@ResumeCertifications, ResumeLanguages=@ResumeLanguages
-                                            WHERE ProfileId=@ProfileId";
+                            jobSeekerQuery = @"UPDATE JobSeekers SET Name=@Name, Mobile=@Mobile,
+                                                Resume=@Resume, ResumeOriginalFileName=@ResumeOriginalFileName, ResumeParseStatus=@ResumeParseStatus,
+                                                ResumeValidationMessage=@ResumeValidationMessage, ResumeUploadedAt=@ResumeUploadedAt, ResumeParsedAt=@ResumeParsedAt,
+                                                ResumeStructuredJson=@ResumeStructuredJson, ResumeRawText=@ResumeRawText
+                                                WHERE ProfileId=@ProfileId";
                     }
                     else
                     {
-                        jobSeekerQuery = @"INSERT INTO JobSeekers (ProfileId, Name, Mobile, TenthGrade, TwelfthGrade, GraduationGrade,
-                                            PostGraduationGrade, Phd, WorksOn, Experience, Photo,
+                        jobSeekerQuery = @"INSERT INTO JobSeekers (ProfileId, Name, Mobile, Photo,
                                             Resume, ResumeOriginalFileName, ResumeParseStatus, ResumeValidationMessage,
-                                            ResumeUploadedAt, ResumeParsedAt, ResumeStructuredJson, ResumeRawText,
-                                            ResumeHeadline, ResumeSummary, ResumeSkills, ResumeEducation,
-                                            ResumeExperienceDetails, ResumeProjects, ResumeCertifications, ResumeLanguages)
-                                            VALUES (@ProfileId, @Name, @Mobile, NULL, NULL, NULL,
-                                            NULL, NULL, @WorksOn, @Experience, 'avatar.png',
+                                            ResumeUploadedAt, ResumeParsedAt, ResumeStructuredJson, ResumeRawText)
+                                            VALUES (@ProfileId, @Name, @Mobile, 'avatar.png',
                                             @Resume, @ResumeOriginalFileName, @ResumeParseStatus, @ResumeValidationMessage,
-                                            @ResumeUploadedAt, @ResumeParsedAt, @ResumeStructuredJson, @ResumeRawText,
-                                            @ResumeHeadline, @ResumeSummary, @ResumeSkills, @ResumeEducation,
-                                            @ResumeExperienceDetails, @ResumeProjects, @ResumeCertifications, @ResumeLanguages)";
+                                            @ResumeUploadedAt, @ResumeParsedAt, @ResumeStructuredJson, @ResumeRawText)";
                     }
 
                     using (SqlCommand jobSeekerCmd = new SqlCommand(jobSeekerQuery, con, tran))
@@ -748,9 +902,7 @@ namespace IntelliJob.User
                         jobSeekerCmd.Parameters.AddWithValue("@ProfileId", userId);
                         jobSeekerCmd.Parameters.AddWithValue("@Name", string.IsNullOrWhiteSpace(document.FullName) ? (object)DBNull.Value : document.FullName);
                         jobSeekerCmd.Parameters.AddWithValue("@Mobile", string.IsNullOrWhiteSpace(document.Mobile) ? (object)DBNull.Value : document.Mobile);
-                        jobSeekerCmd.Parameters.AddWithValue("@WorksOn", string.IsNullOrWhiteSpace(document.Headline) ? (object)DBNull.Value : document.Headline);
-                        string experienceSummary = GetPrimaryExperienceSummary(document.Experience);
-                        jobSeekerCmd.Parameters.AddWithValue("@Experience", string.IsNullOrWhiteSpace(experienceSummary) ? (object)DBNull.Value : experienceSummary);
+
                         ResumeProfileService.AddResumeProfileParameters(jobSeekerCmd, document, relativePath);
                         jobSeekerCmd.ExecuteNonQuery();
                     }
@@ -760,17 +912,6 @@ namespace IntelliJob.User
             }
 
             return physicalPath;
-        }
-
-        private string SanitizeFileName(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                return string.Empty;
-
-            foreach (char invalid in Path.GetInvalidFileNameChars())
-                value = value.Replace(invalid, '-');
-
-            return string.Join("-", value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
         }
 
         private void PersistPreviewDocument(ResumeProfileDocument document)
@@ -786,20 +927,7 @@ namespace IntelliJob.User
         {
             bool editable = PreviewEditMode;
 
-            txtEnhFullName.ReadOnly = !editable;
-            txtEnhEmail.ReadOnly = !editable;
-            txtEnhMobile.ReadOnly = !editable;
-            txtEnhAddress.ReadOnly = !editable;
-            txtEnhHeadline.ReadOnly = !editable;
-            txtEnhSummary.ReadOnly = !editable;
-            txtEnhSkills.ReadOnly = !editable;
-            txtEnhEducation.ReadOnly = !editable;
-            txtEnhExperience.ReadOnly = !editable;
-            txtEnhProjects.ReadOnly = !editable;
-            txtEnhCertifications.ReadOnly = !editable;
-            txtEnhLanguages.ReadOnly = !editable;
-            txtEnhLinkedIn.ReadOnly = !editable;
-            txtEnhPortfolio.ReadOnly = !editable;
+            SetEnhancerEditorsReadOnly(!editable);
 
             btnToggleEnhPreviewEdit.Visible = !editable;
             pnlEnhSaveOptions.Visible = editable;
@@ -837,6 +965,28 @@ namespace IntelliJob.User
             return string.Join(Environment.NewLine, lines.Where(line => !string.IsNullOrWhiteSpace(line)).Select(line => line.Trim()));
         }
 
+        private string JoinCommaSeparated(IEnumerable<string> values)
+        {
+            if (values == null)
+                return string.Empty;
+
+            return string.Join(", ", values.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()));
+        }
+
+        private string FormatMonthYear(int? month, int? year)
+        {
+            if (!month.HasValue && !year.HasValue)
+                return string.Empty;
+
+            if (!month.HasValue)
+                return year.HasValue ? year.Value.ToString() : string.Empty;
+
+            if (!year.HasValue)
+                return month.Value.ToString();
+
+            return month.Value.ToString("00") + "/" + year.Value;
+        }
+
         private string GetPrimaryExperienceSummary(IEnumerable<string> experience)
         {
             if (experience == null)
@@ -865,11 +1015,66 @@ namespace IntelliJob.User
 
         private void ShowReportLoadedStatus(int appliedJobId, string message)
         {
-            litStatus.Text = "<div class='status-note'>" + Server.HtmlEncode(message) + "</div>" +
-                             "<div class='hero-actions' style='margin-top:12px;'>" +
-                             "<a href='ResumeEnhancer.aspx?applicationId=" + appliedJobId + "&history=1&download=pdf' class='hero-action-btn primary'>" +
-                             "<i class='fas fa-file-pdf'></i> Export PDF</a>" +
-                             "</div>";
+            litStatus.Text = "<div class='status-note'>" + Server.HtmlEncode(message) + "</div>";
+            //+
+            //                 "<div class='hero-actions' style='margin-top:12px;'>" +
+            //                 "<a href='ResumeEnhancer.aspx?applicationId=" + appliedJobId + "&history=1&download=pdf' class='hero-action-btn primary'>" +
+            //                 "<i class='fas fa-file-pdf'></i> Export PDF</a>" +
+            //                 "</div>";
+        }
+
+        private void StorePreviewJson(ResumeEnhancementReportRecord report)
+        {
+            if (hfResumePreviewJson == null)
+                return;
+
+            hfResumePreviewJson.Value = string.Empty;
+            if (litHtmlPreviewFrame != null)
+                litHtmlPreviewFrame.Text = BuildHtmlPreviewFrameMarkup();
+            if (report == null)
+                return;
+
+            try
+            {
+                ResumeProfileDocument doc = BuildEditableDocument(report, null);
+                if (doc != null && HasPreviewContent(doc))
+                {
+                    string json = ResumeProfileService.SerializeDocument(doc);
+                    hfResumePreviewJson.Value = JObject.Parse(json).ToString(Formatting.None);
+                    if (litHtmlPreviewFrame != null)
+                        litHtmlPreviewFrame.Text = BuildHtmlPreviewFrameMarkup();
+                    return;
+                }
+
+                if (report.Result != null && !string.IsNullOrWhiteSpace(report.Result.RawGeminiJson))
+                {
+                    JObject jo = JObject.Parse(report.Result.RawGeminiJson);
+                    JToken inner = jo["enhancedResumeDocument"];
+                    hfResumePreviewJson.Value = inner != null ? inner.ToString(Formatting.None) : jo.ToString(Formatting.None);
+                    if (litHtmlPreviewFrame != null)
+                        litHtmlPreviewFrame.Text = BuildHtmlPreviewFrameMarkup();
+                }
+            }
+            catch
+            {
+                if (report.Result != null && !string.IsNullOrWhiteSpace(report.Result.RawGeminiJson))
+                {
+                    hfResumePreviewJson.Value = report.Result.RawGeminiJson;
+                    if (litHtmlPreviewFrame != null)
+                        litHtmlPreviewFrame.Text = BuildHtmlPreviewFrameMarkup();
+                }
+            }
+        }
+
+        private string BuildHtmlPreviewFrameMarkup()
+        {
+            string json = hfResumePreviewJson != null ? hfResumePreviewJson.Value : string.Empty;
+            if (string.IsNullOrWhiteSpace(json))
+                return "<div class='muted-box'>No HTML preview data is available yet.</div>";
+
+            string encoded = HttpUtility.UrlEncode(json).Replace("+", "%20");
+            string src = ResolveUrl("~/ResumePreview.html") + "#data=" + encoded;
+            return "<iframe class='html-preview-frame' src='" + System.Web.HttpUtility.HtmlAttributeEncode(src) + "' title='HTML Resume Preview'></iframe>";
         }
 
         private string BuildInterviewFeedbackText(DataRow row)
@@ -989,12 +1194,45 @@ namespace IntelliJob.User
             return text.Substring(0, maxLength) + Environment.NewLine + "...";
         }
 
+        private string SanitizeFileName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            string sanitized = value.Trim();
+            foreach (char invalidChar in Path.GetInvalidFileNameChars())
+            {
+                sanitized = sanitized.Replace(invalidChar.ToString(), string.Empty);
+            }
+
+            sanitized = Regex.Replace(sanitized, "\\s+", "-");
+            sanitized = Regex.Replace(sanitized, "[^A-Za-z0-9._-]", "");
+
+            return string.IsNullOrWhiteSpace(sanitized) ? string.Empty : sanitized.Trim('-');
+        }
+
         private void ShowStatus(string message, bool isWarning)
         {
             string css = isWarning ? "status-note" : "status-note";
             litStatus.Text = "<div class='" + css + "'>" + Server.HtmlEncode(message) + "</div>";
         }
 
+
+        protected void btnDeleteEnhancementHistory_Click(object sender, EventArgs e)
+        {
+            int userId = Convert.ToInt32(Session["userId"]);
+            int appliedJobId = GetLoadedAppliedJobId();
+
+            if (appliedJobId > 0)
+                ApplicationDataStore.DeleteResumeEnhancementReport(userId, appliedJobId);
+
+            // Redirect to the same URL without the applicationId query param to force a fresh Gemini call
+            string interviewId = Request.QueryString["id"];
+            if (!string.IsNullOrWhiteSpace(interviewId))
+                Response.Redirect("InterviewFeedback.aspx?id=" + interviewId);
+            else
+                Response.Redirect("InterviewFeedback.aspx");
+        }
 
         protected void btnExportResumePdf_Click(object sender, EventArgs e)
         {
@@ -1006,7 +1244,7 @@ namespace IntelliJob.User
 
             if (appliedJobId > 0 && ApplicationDataStore.TryGetResumeEnhancementReport(userId, appliedJobId, out report) && report != null)
             {
-                document = BuildEditableDocument(report);
+                document = BuildEditableDocument(report, null);
             }
             else
             {

@@ -9,8 +9,10 @@ namespace IntelliJob
         public int AtsScore { get; set; }
         public int SemanticScore { get; set; }
         public int KeywordScore { get; set; }
+        public string RawGeminiJson { get; set; }
         public string ResumeSummary { get; set; }
         public string UpdatedResumeText { get; set; }
+        public ResumeProfileDocument EnhancedResumeDocument { get; set; }
         public List<string> Strengths { get; set; } = new List<string>();
         public List<string> Gaps { get; set; } = new List<string>();
         public List<string> PriorityKeywords { get; set; } = new List<string>();
@@ -52,6 +54,7 @@ namespace IntelliJob
         public string StoredResumePath { get; set; }
         public string ResumeSource { get; set; }
         public string OriginalFileName { get; set; }
+        public string StructuredJson { get; set; }
         public DateTime SavedAt { get; set; }
     }
 

@@ -47,6 +47,7 @@ namespace IntelliJob.User
                                  mf.ProblemSolvingScore, mf.ProblemSolvingComment,
                                  mf.CulturalFitScore, mf.CulturalFitComment,
                                  mf.ConfidenceScore, mf.ConfidenceComment,
+                                 mf.ExperienceValidityScore, mf.ExperienceValidityComment,
                                  mf.Strengths, mf.AreasForImprovement, mf.FinalAssessment
                                  FROM Interviews mi
                                  INNER JOIN InterviewFeedback mf ON mi.InterviewId = mf.InterviewId
@@ -206,7 +207,7 @@ namespace IntelliJob.User
                 var transcript = new List<TranscriptMessage>();
                 using (SqlConnection con = new SqlConnection(str))
                 {
-                    string query = @"SELECT SpeakerRole, Content FROM InterviewTranscripts
+                    string query = @"SELECT SpeakerRole, Content FROM InterviewTranscripts 
                                      WHERE InterviewId = @InterviewId ORDER BY TranscriptId";
                     using (SqlCommand cmd = new SqlCommand(query, con))
                     {
@@ -290,8 +291,8 @@ namespace IntelliJob.User
         {
             using (SqlConnection con = new SqlConnection(str))
             {
-                string query = @"INSERT INTO InterviewFeedback
-                    (InterviewId, UserId, TotalScore,
+                string query = @"INSERT INTO InterviewFeedback 
+                    (InterviewId, UserId, TotalScore, 
                      CommunicationScore, CommunicationComment,
                      TechnicalScore, TechnicalComment,
                      ProblemSolvingScore, ProblemSolvingComment,
@@ -299,7 +300,7 @@ namespace IntelliJob.User
                      ConfidenceScore, ConfidenceComment,
                      ExperienceValidityScore, ExperienceValidityComment,
                      Strengths, AreasForImprovement, FinalAssessment)
-                    VALUES
+                    VALUES 
                     (@InterviewId, @UserId, @TotalScore,
                      @CommScore, @CommComment,
                      @TechScore, @TechComment,
@@ -354,7 +355,7 @@ namespace IntelliJob.User
             {
                 int score = row.Table.Columns.Contains(cat.Score) && row[cat.Score] != DBNull.Value ? Convert.ToInt32(row[cat.Score]) : 0;
                 string comment = row.Table.Columns.Contains(cat.Comment) ? row[cat.Comment].ToString() : "";
-
+                
                 double percentage = cat.Max == 100 ? score : (score * 100.0 / cat.Max);
                 string level = percentage >= 70 ? "high" : percentage >= 40 ? "mid" : "low";
 

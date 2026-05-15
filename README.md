@@ -14,8 +14,9 @@ An AI-powered job portal built with **ASP.NET Web Forms (.NET Framework 4.7.2)**
 - **Interview Access Control** – Company interview invitations use one-time passwords before the live session starts
 - **Interview Feedback** – AI-generated scoring on communication, technical skills, problem-solving, and more
 - **Interview History** – Filter past interviews by job and revisit feedback from previous sessions
-- **Resume Builder** – Build, edit, and download resumes from within the platform, including LinkedIn and portfolio links
+- **Resume Builder** – Build and edit structured resumes with LinkedIn and portfolio links
 - **Resume Enhancer** – Improve resume content with editable structured output and saved reports
+- **Resume Preview Export** – Open the HTML preview page and use the built-in browser print flow to download a printable PDF
 - **Profile Resume Tools** – Import, update, or remove stored resumes from the user profile
 - **Application Resume Uploads** – Upload a resume while applying for a job or during registration
 - **Contact Form** – Users can submit queries; admin can view and reply

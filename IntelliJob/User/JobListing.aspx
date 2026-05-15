@@ -1,7 +1,7 @@
-<%@ Page Title="" Language="C#" Async="true" MasterPageFile="~/User/UserMaster.Master" AutoEventWireup="true" CodeBehind="JobListing.aspx.cs" Inherits="IntelliJob.User.JobListing" %>
+﻿<%@ Page Title="" Language="C#" Async="true" MasterPageFile="~/User/UserMaster.Master" AutoEventWireup="true" CodeBehind="JobListing.aspx.cs" Inherits="IntelliJob.User.JobListing" %>
 
 <asp:Content ID="Content1" ContentPlaceHolderID="head" runat="server">
-
+    
     <style type="text/css">
         .jobs-container {
             background-color: #f8f9fa;
@@ -466,12 +466,12 @@
                                 </label>
                                 <div>
                                     <asp:DropDownList ID="ddlCountry" runat="server" CssClass="modern-select"
-                                        DataSourceID="SqlDataSource1" AppendDataBoundItems="True"
-                                        DataTextField="CountryName" DataValueField="CountryName"
+                                        DataSourceID="SqlDataSource1" AppendDataBoundItems="True" 
+                                        DataTextField="CountryName" DataValueField="CountryName" 
                                         OnSelectedIndexChanged="ddlCountry_SelectedIndexChanged">
                                         <asp:ListItem Value="0" style="-moz-appearance: none; -webkit-appearance: none; margin-bottom:10px;">Select Country</asp:ListItem>
                                     </asp:DropDownList>
-                                    <asp:SqlDataSource ID="SqlDataSource1" runat="server"
+                                    <asp:SqlDataSource ID="SqlDataSource1" runat="server" 
                                         ConnectionString="<%$ ConnectionStrings:cs %>"
                                         SelectCommand="SELECT [CountryName] FROM [Country]">
                                     </asp:SqlDataSource>
@@ -572,7 +572,7 @@
                                                     </div>
                                                 </div>
                                                     <a href="JobDetails.aspx?id=<%# Eval("JobId") %>" class="btn-action" style="margin-left:10px; margin-right:20px;">View Details</a>
-
+                                                
                                             </div>
                                         </div>
                                     </ItemTemplate>

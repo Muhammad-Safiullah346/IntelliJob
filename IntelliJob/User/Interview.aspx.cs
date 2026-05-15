@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
+using System.IO;
 using System.Web.UI.WebControls;
 
 namespace IntelliJob.User
@@ -221,6 +222,9 @@ namespace IntelliJob.User
                                  LEFT JOIN InterviewInvitations ii ON mi.InterviewId = ii.InterviewId
                                  WHERE mi.UserId = @UserId
                                    AND (
+                                                                                 -- Interviews created from job applications should always be shown.
+                                                                                 mi.AppliedJobId IS NOT NULL
+                                                                                 OR
                                          -- Always include company interviews
                                          ii.InterviewId IS NOT NULL
                                          OR
@@ -293,18 +297,26 @@ namespace IntelliJob.User
             {
                 using (SqlConnection con = new SqlConnection(str))
                 {
-                    string query = "SELECT Resume FROM JobSeekers WHERE ProfileId = @UserId";
+                    string query = "SELECT ResumeStructuredJson, Resume FROM JobSeekers WHERE ProfileId = @UserId";
                     using (SqlCommand cmd = new SqlCommand(query, con))
                     {
                         cmd.Parameters.AddWithValue("@UserId", userId);
                         con.Open();
-                        object result = cmd.ExecuteScalar();
-                        if (result != null && result != DBNull.Value)
+                        using (SqlDataReader reader = cmd.ExecuteReader())
                         {
-                            string resumePath = result.ToString();
-                            if (!string.IsNullOrWhiteSpace(resumePath))
+                            if (reader.Read())
                             {
-                                return ResumeTextExtractor.ExtractText(resumePath);
+                                string structuredJson = reader["ResumeStructuredJson"] != DBNull.Value ? reader["ResumeStructuredJson"].ToString() : string.Empty;
+                                if (!string.IsNullOrWhiteSpace(structuredJson))
+                                {
+                                    ResumeProfileDocument document = ResumeProfileService.DeserializeDocument(structuredJson);
+                                    if (document != null)
+                                        return ResumeProfileService.BuildResumeText(document);
+                                }
+
+                                string resumePath = reader["Resume"] != DBNull.Value ? reader["Resume"].ToString() : string.Empty;
+                                if (!string.IsNullOrWhiteSpace(resumePath) && File.Exists(resumePath))
+                                    return ResumeTextExtractor.ExtractText(resumePath);
                             }
                         }
                     }
@@ -361,16 +373,16 @@ namespace IntelliJob.User
         public string GetActionText(object status, object isCompanyInterview, object isPasswordUsed)
         {
             string s = status.ToString().ToLower();
-            if (s == "completed") return "View Feedback";
-            if (s == "cancelled") return "Cancelled";
-            if (s == "access-revoked") return "Access Revoked";
+            if (s == "completed") return "<i class='fas fa-chart-bar'></i> View Feedback";
+            if (s == "cancelled") return "<i class='fas fa-times'></i>  Cancelled";
+            if (s == "access-revoked") return "<i class='fas fa-times'></i> Access Revoked";
 
             bool isCompany = Convert.ToInt32(isCompanyInterview) == 1;
             bool pwdUsed = Convert.ToBoolean(isPasswordUsed);
 
             if (isCompany && pwdUsed) return "Access Revoked";
-            if (s == "in-progress") return "Continue";
-            return "Start";
+            if (s == "in-progress") return "<i class='fas fa-play'></i> Continue";
+            return "<i class='fas fa-play'></i> Start";
         }
 
         public string GetRetakeButton(object interviewId, object status, object isCompanyInterview)

@@ -6,6 +6,7 @@ using System.Data.SqlClient;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Web;
 using System.Web.UI;
 using System.Web.UI.WebControls;
 
@@ -13,11 +14,18 @@ namespace IntelliJob.User
 {
     public partial class Profile : System.Web.UI.Page
     {
+        private const string ProfileEditModeViewStateKey = "ProfileEditMode";
         private SqlConnection con;
         private SqlCommand cmd;
         private SqlDataAdapter sda;
         private DataTable dt;
         private readonly string str = ConfigurationManager.ConnectionStrings["cs"].ConnectionString;
+
+        private bool ProfileEditMode
+        {
+            get { return ViewState[ProfileEditModeViewStateKey] != null && Convert.ToBoolean(ViewState[ProfileEditModeViewStateKey]); }
+            set { ViewState[ProfileEditModeViewStateKey] = value; }
+        }
 
         protected void Page_Load(object sender, EventArgs e)
         {
@@ -64,16 +72,18 @@ namespace IntelliJob.User
             }
         }
 
+        protected void Page_PreRender(object sender, EventArgs e)
+        {
+            ClientScript.RegisterStartupScript(GetType(), "profileEditorToggle", "toggleProfileEditor(" + (ProfileEditMode ? "true" : "false") + ");", true);
+        }
+
         private void showUserProfile()
         {
             con = new SqlConnection(str);
             string query = @"SELECT u.UserId, u.Username, js.Name, u.Address, js.Mobile, u.Email, u.Country, js.Resume, js.Photo,
                                     js.ResumeOriginalFileName, js.ResumeParseStatus, js.ResumeValidationMessage,
                                     js.ResumeUploadedAt, js.ResumeParsedAt, js.ResumeStructuredJson,
-                                    js.ResumeHeadline, js.ResumeSummary, js.ResumeSkills, js.ResumeEducation,
-                                    js.ResumeExperienceDetails, js.ResumeProjects, js.ResumeCertifications,
-                                    js.ResumeLanguages, js.ResumeRawText, js.WorksOn, js.Experience,
-                                    js.TenthGrade, js.TwelfthGrade, js.GraduationGrade, js.PostGraduationGrade, js.Phd
+                                    js.ResumeRawText
                              FROM Users u
                              LEFT JOIN JobSeekers js ON u.UserId = js.ProfileId
                              WHERE u.Username = @username";
@@ -86,10 +96,23 @@ namespace IntelliJob.User
 
             if (dt.Rows.Count > 0)
             {
+                // Always ensure these columns exist so Eval() in the DataList template never throws,
+                // even when no resume has been parsed yet.
+                EnsureResumeColumns(dt);
+
                 DataRow row = dt.Rows[0];
                 ResumeProfileDocument document = EnsureResumeDocument(Convert.ToInt32(row["UserId"]), row, true);
                 if (document != null)
+                {
                     ApplyDocumentToRow(row, document);
+                    hfResumePreviewJson.Value = ResumeProfileService.SerializeDocument(document);
+                }
+                else
+                {
+                    hfResumePreviewJson.Value = string.Empty;
+                }
+
+                PopulateProfileEditor(row);
 
                 dlProfile.DataSource = dt;
                 dlProfile.DataBind();
@@ -159,7 +182,15 @@ namespace IntelliJob.User
 
         protected void dlProfile_ItemCommand(object source, DataListCommandEventArgs e)
         {
-            if (e.CommandName == "EditUserProfile")
+            if (e.CommandName == "EditProfile")
+            {
+                ProfileEditMode = true;
+                PopulateProfileEditor(dt != null && dt.Rows.Count > 0 ? dt.Rows[0] : null);
+                showUserProfile();
+                return;
+            }
+
+            if (e.CommandName == "EditResume")
             {
                 Response.Redirect("ResumeBuild.aspx?id=" + e.CommandArgument.ToString());
                 return;
@@ -209,6 +240,109 @@ namespace IntelliJob.User
             }
         }
 
+        protected void dlProfile_ItemDataBound(object sender, DataListItemEventArgs e)
+        {
+            if (e.Item == null || (e.Item.ItemType != ListItemType.Item && e.Item.ItemType != ListItemType.AlternatingItem))
+                return;
+
+            Literal litProfileHtmlPreviewFrame = e.Item.FindControl("litProfileHtmlPreviewFrame") as Literal;
+            if (litProfileHtmlPreviewFrame != null)
+                litProfileHtmlPreviewFrame.Text = BuildHtmlPreviewFrameMarkup();
+        }
+
+        protected void btnSaveProfile_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                int userId = Convert.ToInt32(Session["userId"]);
+
+                if (!string.IsNullOrWhiteSpace(txtProfilePassword.Text) || !string.IsNullOrWhiteSpace(txtProfileConfirmPassword.Text))
+                {
+                    if (!string.Equals(txtProfilePassword.Text.Trim(), txtProfileConfirmPassword.Text.Trim(), StringComparison.Ordinal))
+                    {
+                        ShowProfileEditorMessage("Password and confirm password do not match.", true);
+                        return;
+                    }
+                }
+
+                string photoFileName = GetCurrentProfilePhoto(userId);
+                if (fuProfilePhoto.HasFile)
+                {
+                    if (!Utils.IsValidExtension(fuProfilePhoto.FileName))
+                    {
+                        ShowProfileEditorMessage("Please select a .png, .jpg, or .jpeg file for photo.", true);
+                        return;
+                    }
+
+                    photoFileName = fuProfilePhoto.FileName;
+                    fuProfilePhoto.PostedFile.SaveAs(Server.MapPath("~/photos/") + photoFileName);
+                }
+
+                using (SqlConnection profileCon = new SqlConnection(str))
+                {
+                    profileCon.Open();
+                    using (SqlTransaction tran = profileCon.BeginTransaction())
+                    {
+                        try
+                        {
+                            string currentPassword = GetCurrentProfilePassword(userId, profileCon, tran);
+                            if (!string.IsNullOrWhiteSpace(txtProfilePassword.Text))
+                                currentPassword = txtProfilePassword.Text.Trim();
+
+                            using (SqlCommand userCmd = new SqlCommand(@"UPDATE Users SET Username=@Username, Password=@Password, Email=@Email, Address=@Address, Country=@Country, UpdatedAt=GETDATE() WHERE UserId=@UserId", profileCon, tran))
+                            {
+                                userCmd.Parameters.AddWithValue("@Username", txtProfileUserName.Text.Trim());
+                                userCmd.Parameters.AddWithValue("@Password", currentPassword);
+                                userCmd.Parameters.AddWithValue("@Email", txtProfileEmail.Text.Trim());
+                                userCmd.Parameters.AddWithValue("@Address", txtProfileAddress.Text.Trim());
+                                userCmd.Parameters.AddWithValue("@Country", ddlProfileCountry.SelectedValue);
+                                userCmd.Parameters.AddWithValue("@UserId", userId);
+                                userCmd.ExecuteNonQuery();
+                            }
+
+                            bool profileExists;
+                            using (SqlCommand checkCmd = new SqlCommand("SELECT COUNT(*) FROM JobSeekers WHERE ProfileId = @UserId", profileCon, tran))
+                            {
+                                checkCmd.Parameters.AddWithValue("@UserId", userId);
+                                profileExists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+                            }
+
+                            string jobSeekerSql = profileExists
+                                ? @"UPDATE JobSeekers SET Name=@Name, Mobile=@Mobile, Photo=@Photo WHERE ProfileId=@ProfileId"
+                                          : @"INSERT INTO JobSeekers (ProfileId, Name, Mobile, Photo, Resume, ResumeOriginalFileName, ResumeParseStatus, ResumeValidationMessage, ResumeUploadedAt, ResumeParsedAt, ResumeStructuredJson, ResumeRawText)
+                                              VALUES (@ProfileId, @Name, @Mobile, @Photo, NULL, NULL, 'none', NULL, NULL, NULL, NULL, NULL)";
+
+                            using (SqlCommand jsCmd = new SqlCommand(jobSeekerSql, profileCon, tran))
+                            {
+                                jsCmd.Parameters.AddWithValue("@ProfileId", userId);
+                                jsCmd.Parameters.AddWithValue("@Name", txtProfileFullName.Text.Trim());
+                                jsCmd.Parameters.AddWithValue("@Mobile", txtProfileMobile.Text.Trim());
+                                jsCmd.Parameters.AddWithValue("@Photo", string.IsNullOrWhiteSpace(photoFileName) ? "avatar.png" : photoFileName);
+                                jsCmd.ExecuteNonQuery();
+                            }
+
+                            tran.Commit();
+                        }
+                        catch
+                        {
+                            tran.Rollback();
+                            throw;
+                        }
+                    }
+                }
+
+                Session["user"] = txtProfileUserName.Text.Trim();
+                ProfileEditMode = false;
+                ShowProfileEditorMessage("Profile updated successfully.", false);
+                showUserProfile();
+            }
+            catch (Exception ex)
+            {
+                ProfileEditMode = true;
+                ShowProfileEditorMessage("Error updating profile: " + ex.Message, true);
+            }
+        }
+
         private void DeleteResumeForUser(int userId)
         {
             string resumePath = string.Empty;
@@ -238,15 +372,7 @@ namespace IntelliJob.User
                                                             ResumeUploadedAt = NULL,
                                                             ResumeParsedAt = NULL,
                                                             ResumeStructuredJson = NULL,
-                                                            ResumeRawText = NULL,
-                                                            ResumeHeadline = NULL,
-                                                            ResumeSummary = NULL,
-                                                            ResumeSkills = NULL,
-                                                            ResumeEducation = NULL,
-                                                            ResumeExperienceDetails = NULL,
-                                                            ResumeProjects = NULL,
-                                                            ResumeCertifications = NULL,
-                                                            ResumeLanguages = NULL
+                                                            ResumeRawText = NULL
                                                             WHERE ProfileId = @UserId", conUpdate))
             {
                 cmdUpdate.Parameters.AddWithValue("@UserId", userId);
@@ -293,8 +419,6 @@ namespace IntelliJob.User
                 string updateQuery = @"UPDATE JobSeekers SET
                     Name = CASE WHEN (Name IS NULL OR LTRIM(RTRIM(Name)) = '') AND @ParsedName <> '' THEN @ParsedName ELSE Name END,
                     Mobile = CASE WHEN (Mobile IS NULL OR LTRIM(RTRIM(Mobile)) = '') AND @ParsedMobile <> '' THEN @ParsedMobile ELSE Mobile END,
-                    WorksOn = CASE WHEN (WorksOn IS NULL OR LTRIM(RTRIM(WorksOn)) = '') AND @ParsedHeadline <> '' THEN @ParsedHeadline ELSE WorksOn END,
-                    Experience = CASE WHEN (Experience IS NULL OR LTRIM(RTRIM(Experience)) = '') AND @ParsedExperience <> '' THEN @ParsedExperience ELSE Experience END,
                     Resume = @Resume,
                     ResumeOriginalFileName = @ResumeOriginalFileName,
                     ResumeParseStatus = @ResumeParseStatus,
@@ -302,15 +426,7 @@ namespace IntelliJob.User
                     ResumeUploadedAt = @ResumeUploadedAt,
                     ResumeParsedAt = @ResumeParsedAt,
                     ResumeStructuredJson = @ResumeStructuredJson,
-                    ResumeRawText = @ResumeRawText,
-                    ResumeHeadline = @ResumeHeadline,
-                    ResumeSummary = @ResumeSummary,
-                    ResumeSkills = @ResumeSkills,
-                    ResumeEducation = @ResumeEducation,
-                    ResumeExperienceDetails = @ResumeExperienceDetails,
-                    ResumeProjects = @ResumeProjects,
-                    ResumeCertifications = @ResumeCertifications,
-                    ResumeLanguages = @ResumeLanguages
+                    ResumeRawText = @ResumeRawText
                     WHERE ProfileId = @UserId";
 
                 using (SqlCommand cmdUpdate = new SqlCommand(updateQuery, resumeCon))
@@ -318,13 +434,29 @@ namespace IntelliJob.User
                     cmdUpdate.Parameters.AddWithValue("@UserId", userId);
                     cmdUpdate.Parameters.AddWithValue("@ParsedName", string.IsNullOrWhiteSpace(document.FullName) ? string.Empty : document.FullName);
                     cmdUpdate.Parameters.AddWithValue("@ParsedMobile", string.IsNullOrWhiteSpace(document.Mobile) ? string.Empty : document.Mobile);
-                    cmdUpdate.Parameters.AddWithValue("@ParsedHeadline", string.IsNullOrWhiteSpace(document.Headline) ? string.Empty : document.Headline);
-                    cmdUpdate.Parameters.AddWithValue("@ParsedExperience", document.Experience != null && document.Experience.Count > 0 ? document.Experience[0] : string.Empty);
                     ResumeProfileService.AddResumeProfileParameters(cmdUpdate, document, resumePath);
                     resumeCon.Open();
                     cmdUpdate.ExecuteNonQuery();
                 }
             }
+        }
+
+        private void PopulateProfileEditor(DataRow row)
+        {
+            if (row == null)
+                return;
+
+            txtProfileUserName.Text = GetStringValue(row, "Username");
+            txtProfileFullName.Text = GetStringValue(row, "Name");
+            txtProfileAddress.Text = GetStringValue(row, "Address");
+            txtProfileMobile.Text = GetStringValue(row, "Mobile");
+            txtProfileEmail.Text = GetStringValue(row, "Email");
+            txtProfilePassword.Text = string.Empty;
+            txtProfileConfirmPassword.Text = string.Empty;
+
+            string country = GetStringValue(row, "Country");
+            if (!string.IsNullOrWhiteSpace(country) && ddlProfileCountry.Items.FindByValue(country) != null)
+                ddlProfileCountry.SelectedValue = country;
         }
 
         private void ApplyDocumentToRow(DataRow row, ResumeProfileDocument document)
@@ -335,22 +467,56 @@ namespace IntelliJob.User
             row["ResumeParseStatus"] = document.IsValid ? "ready" : "failed";
             row["ResumeValidationMessage"] = document.ValidationMessage ?? string.Empty;
             row["ResumeOriginalFileName"] = document.OriginalFileName ?? string.Empty;
-            row["ResumeHeadline"] = document.Headline ?? string.Empty;
-            row["ResumeSummary"] = document.Summary ?? string.Empty;
-            row["ResumeSkills"] = JoinLines(document.Skills);
-            row["ResumeEducation"] = JoinLines(document.Education);
-            row["ResumeExperienceDetails"] = JoinLines(document.Experience);
-            row["ResumeProjects"] = JoinLines(document.Projects);
-            row["ResumeCertifications"] = JoinLines(document.Certifications);
-            row["ResumeLanguages"] = JoinLines(document.Languages);
             row["ResumeStructuredJson"] = ResumeProfileService.SerializeDocument(document);
             row["ResumeRawText"] = document.RawText ?? string.Empty;
 
-            if (row.Table.Columns.Contains("WorksOn") && string.IsNullOrWhiteSpace(GetStringValue(row, "WorksOn")))
-                row["WorksOn"] = document.Headline ?? string.Empty;
+            SetOrAddStringColumn(row, "ResumeHeadline", !string.IsNullOrWhiteSpace(document.Headline) ? document.Headline : string.Empty);
+            SetOrAddStringColumn(row, "ResumeSummary", !string.IsNullOrWhiteSpace(document.ProfessionalSummary) ? document.ProfessionalSummary : document.Summary);
+            SetOrAddStringColumn(row, "ResumeSkills", JoinLines(document.Skills));
+            SetOrAddStringColumn(row, "ResumeEducation", JoinLines(document.Education));
+            SetOrAddStringColumn(row, "ResumeExperienceDetails", JoinLines(document.Experience));
+            SetOrAddStringColumn(row, "ResumeProjects", JoinLines(document.Projects));
+            SetOrAddStringColumn(row, "ResumeCertifications", JoinLines(document.Certifications));
+            SetOrAddStringColumn(row, "ResumeLanguages", JoinLines(document.Languages));
 
-            if (row.Table.Columns.Contains("Experience") && string.IsNullOrWhiteSpace(GetStringValue(row, "Experience")) && document.Experience != null && document.Experience.Count > 0)
-                row["Experience"] = document.Experience[0];
+
+        }
+
+        private void SetOrAddStringColumn(DataRow row, string columnName, string value)
+        {
+            if (row == null || row.Table == null)
+                return;
+
+            if (!row.Table.Columns.Contains(columnName))
+                row.Table.Columns.Add(columnName, typeof(string));
+
+            row[columnName] = value ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Guarantees all virtual resume columns exist in the DataTable with empty-string defaults
+        /// before DataBind is called, so Eval() in the template never throws even when no resume
+        /// has been parsed yet.
+        /// </summary>
+        private static void EnsureResumeColumns(DataTable table)
+        {
+            string[] columns = { "ResumeHeadline", "ResumeSummary", "ResumeSkills",
+                                  "ResumeEducation", "ResumeExperienceDetails",
+                                  "ResumeProjects", "ResumeCertifications", "ResumeLanguages" };
+            foreach (string col in columns)
+            {
+                if (!table.Columns.Contains(col))
+                    table.Columns.Add(col, typeof(string));
+            }
+            // Ensure every row has an empty string default for newly added columns
+            foreach (DataRow row in table.Rows)
+            {
+                foreach (string col in columns)
+                {
+                    if (row[col] == DBNull.Value || row[col] == null)
+                        row[col] = string.Empty;
+                }
+            }
         }
 
         protected string BuildResumeOverviewHtml(object statusObj, object validationObj, object fileNameObj, object headlineObj, object summaryObj, object skillsObj, object educationObj, object experienceObj, object projectsObj, object certificationsObj, object languagesObj)
@@ -369,7 +535,6 @@ namespace IntelliJob.User
             if (!string.IsNullOrWhiteSpace(validation))
                 builder.Append("<p class='mb-1 text-danger'><strong>Validation:</strong> ").Append(Server.HtmlEncode(validation)).Append("</p>");
 
-            builder.Append(BuildResumeSectionHtml("Headline", headlineObj));
             builder.Append(BuildResumeSectionHtml("Summary", summaryObj));
             builder.Append(BuildResumeSectionHtml("Skills", skillsObj));
             builder.Append(BuildResumeSectionHtml("Education", educationObj));
@@ -389,6 +554,17 @@ namespace IntelliJob.User
                 return string.Empty;
 
             return "<div style='margin-top:8px;'><strong>" + Server.HtmlEncode(title) + "</strong><div style='white-space:pre-wrap;'>" + Server.HtmlEncode(text) + "</div></div>";
+        }
+
+        private string BuildHtmlPreviewFrameMarkup()
+        {
+            string json = hfResumePreviewJson != null ? hfResumePreviewJson.Value : string.Empty;
+            if (string.IsNullOrWhiteSpace(json))
+                return "<div class='muted-box'>No HTML preview data is available yet.</div>";
+
+            string encoded = HttpUtility.UrlEncode(json).Replace("+", "%20");
+            string src = ResolveUrl("~/ResumePreview.html") + "#data=" + encoded;
+            return "<iframe class='html-preview-frame' src='" + HttpUtility.HtmlAttributeEncode(src) + "' title='HTML Resume Preview'></iframe>";
         }
 
         private string ResolveStoredPath(string storedPath)
@@ -439,6 +615,35 @@ namespace IntelliJob.User
             lblMsg.Text = message;
             lblMsg.CssClass = isDanger ? "alert alert-danger mb-2" : "alert alert-success mb-2";
             lblMsg.Visible = true;
+        }
+
+        private void ShowProfileEditorMessage(string message, bool isDanger)
+        {
+            lblProfileMsg.Text = message;
+            lblProfileMsg.CssClass = isDanger ? "alert alert-danger mb-2" : "alert alert-success mb-2";
+            lblProfileMsg.Visible = true;
+        }
+
+        private string GetCurrentProfilePassword(int userId, SqlConnection openConnection, SqlTransaction tran)
+        {
+            using (SqlCommand cmdPassword = new SqlCommand("SELECT Password FROM Users WHERE UserId = @UserId", openConnection, tran))
+            {
+                cmdPassword.Parameters.AddWithValue("@UserId", userId);
+                object result = cmdPassword.ExecuteScalar();
+                return result == null || result == DBNull.Value ? string.Empty : result.ToString();
+            }
+        }
+
+        private string GetCurrentProfilePhoto(int userId)
+        {
+            using (SqlConnection profileCon = new SqlConnection(str))
+            using (SqlCommand cmdPhoto = new SqlCommand("SELECT Photo FROM JobSeekers WHERE ProfileId = @UserId", profileCon))
+            {
+                cmdPhoto.Parameters.AddWithValue("@UserId", userId);
+                profileCon.Open();
+                object result = cmdPhoto.ExecuteScalar();
+                return result == null || result == DBNull.Value ? string.Empty : result.ToString();
+            }
         }
 
         protected void btnSend_Click(object sender, EventArgs e)

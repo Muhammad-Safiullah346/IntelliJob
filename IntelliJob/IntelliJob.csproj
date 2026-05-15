@@ -1,4 +1,4 @@
-﻿<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -594,6 +594,10 @@
     </Compile>
     <Compile Include="User\ResumeBuild.aspx.designer.cs">
       <DependentUpon>ResumeBuild.aspx</DependentUpon>
+    </Compile>
+    <Compile Include="User\ResumeEnhancer.Structured.partial.cs">
+      <DependentUpon>ResumeEnhancer.aspx</DependentUpon>
+      <SubType>ASPXCodeBehind</SubType>
     </Compile>
     <Compile Include="User\ResumeEnhancer.aspx.cs">
       <DependentUpon>ResumeEnhancer.aspx</DependentUpon>

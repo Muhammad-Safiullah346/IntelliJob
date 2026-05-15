@@ -11,6 +11,52 @@ namespace IntelliJob
 {
     public static class ResumeTextExtractor
     {
+        public static int EstimatePageCount(string resumePath, string extractedText = null)
+        {
+            string fullPath = ResolvePath(resumePath);
+            if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+                return 0;
+
+            string extension = Path.GetExtension(fullPath).ToLowerInvariant();
+            try
+            {
+                if (extension == ".pdf")
+                {
+                    string raw = Encoding.GetEncoding("ISO-8859-1").GetString(File.ReadAllBytes(fullPath));
+                    int count = Regex.Matches(raw, @"/Type\s*/Page\b", RegexOptions.IgnoreCase).Count;
+                    return Math.Max(1, count);
+                }
+
+                if (extension == ".docx")
+                {
+                    using (ZipArchive archive = ZipFile.OpenRead(fullPath))
+                    {
+                        ZipArchiveEntry entry = archive.GetEntry("word/document.xml");
+                        if (entry == null)
+                            return 1;
+
+                        using (Stream stream = entry.Open())
+                        {
+                            XDocument document = XDocument.Load(stream);
+                            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                            int breaks = document.Descendants(w + "br")
+                                .Count(n => string.Equals((string)n.Attribute(w + "type"), "page", StringComparison.OrdinalIgnoreCase));
+                            breaks += document.Descendants(w + "lastRenderedPageBreak").Count();
+                            return Math.Max(1, breaks + 1);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            string text = extractedText ?? ExtractText(fullPath);
+            int words = Regex.Matches(text ?? string.Empty, @"\b[\w@.+-]+\b").Count;
+            int estimated = (int)Math.Ceiling(words / 750.0);
+            return Math.Max(1, estimated);
+        }
+
         public static string ExtractText(string resumePath)
         {
             string fullPath = ResolvePath(resumePath);

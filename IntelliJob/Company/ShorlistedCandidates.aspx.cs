@@ -55,10 +55,10 @@ namespace IntelliJob.Company
                 return;
             }
             query = @"
-                        SELECT
+                        SELECT 
                         ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS [Sr.No],
                         aj.AppliedJobId,
-                        aj.JobId,
+                        aj.JobId,  
                         j.Title,
                         js.Name AS UserName,
                         u.Email,
@@ -140,7 +140,7 @@ namespace IntelliJob.Company
 
         protected void GridView1_RowDataBound(object sender, GridViewRowEventArgs e)
         {
-
+            
         }
 
         protected void GridView1_SelectedIndexChanged(object sender, EventArgs e)
@@ -266,12 +266,18 @@ namespace IntelliJob.Company
             }
 
             List<string> previousQuestions = LoadPreviousQuestions(context.UserId, context.JobTitle);
-
+            
             string resumeText = null;
             ApplicationResumeSelection selection;
             if (ApplicationDataStore.TryGetApplicationResumeSelection(context.UserId, context.AppliedJobId, out selection))
             {
-                if (System.IO.File.Exists(selection.StoredResumePath))
+                if (!string.IsNullOrWhiteSpace(selection.StructuredJson))
+                {
+                    ResumeProfileDocument document = ResumeProfileService.DeserializeDocument(selection.StructuredJson);
+                    if (document != null)
+                        resumeText = ResumeProfileService.BuildResumeText(document);
+                }
+                else if (System.IO.File.Exists(selection.StoredResumePath))
                 {
                     resumeText = ResumeTextExtractor.ExtractText(selection.StoredResumePath);
                 }
@@ -308,8 +314,7 @@ namespace IntelliJob.Company
                 string query = @"SELECT aj.AppliedJobId, aj.JobId, aj.UserId,
                                         j.Title, j.Experience AS JobExperience, j.Specialization, j.Description, j.Qualification, j.JobType, j.CompanyName,
                                         u.Email, u.Username,
-                                        js.Name, js.WorksOn, js.Experience AS CandidateExperience, js.TenthGrade, js.TwelfthGrade,
-                                        js.GraduationGrade, js.PostGraduationGrade, js.Phd, js.Resume
+                                        js.Name, js.Resume
                                  FROM AppliedJobs aj
                                  INNER JOIN Jobs j ON aj.JobId = j.JobId
                                  INNER JOIN Users u ON aj.UserId = u.UserId
@@ -352,9 +357,6 @@ namespace IntelliJob.Company
                                 "Job Description: " + row["Description"],
                             ResumeSummary =
                                 "Candidate Name: " + (string.IsNullOrWhiteSpace(row["Name"].ToString()) ? row["Username"].ToString() : row["Name"].ToString()) + "\n" +
-                                "Works On: " + row["WorksOn"] + "\n" +
-                                "Experience: " + row["CandidateExperience"] + "\n" +
-                                "Education (10th/12th/Grad/PostGrad/PhD): " + row["TenthGrade"] + "/" + row["TwelfthGrade"] + "/" + row["GraduationGrade"] + "/" + row["PostGraduationGrade"] + "/" + row["Phd"] + "\n" +
                                 "Uploaded Resume Path: " + row["Resume"],
                             CompanyName = row["CompanyName"].ToString(),
                             CandidateName = string.IsNullOrWhiteSpace(row["Name"].ToString()) ? row["Username"].ToString() : row["Name"].ToString(),
@@ -708,7 +710,7 @@ namespace IntelliJob.Company
                     // Call the shared email function
                     SendInterviewEmail(row);
                     anySelected = true;
-                    // Note: If multiple emails are sent, the lblMsg will only show the status
+                    // Note: If multiple emails are sent, the lblMsg will only show the status 
                     // of the last processed row.
                 }
             }

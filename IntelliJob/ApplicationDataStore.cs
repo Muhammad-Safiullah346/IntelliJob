@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Web;
 using Newtonsoft.Json;
@@ -8,6 +9,11 @@ namespace IntelliJob
 {
     public static class ApplicationDataStore
     {
+        private static string GetApplicationDraftLockFilePath(int userId, int jobId)
+        {
+            return Path.Combine(GetApplicationDraftFolder(userId, jobId), "profile-only.lock");
+        }
+
         private static string GetAppDataRoot()
         {
             if (HttpContext.Current != null)
@@ -68,23 +74,24 @@ namespace IntelliJob
             if (string.IsNullOrWhiteSpace(resolvedSource) || !File.Exists(resolvedSource))
                 return null;
 
-            string folder = GetApplicationFolder(userId, appliedJobId);
-            Directory.CreateDirectory(folder);
+            string structuredJson = string.Empty;
+            ResumeProfileDocument imported = null;
+            if (string.Equals(Path.GetExtension(resolvedSource), ".json", StringComparison.OrdinalIgnoreCase))
+            {
+                imported = ResumeProfileService.DeserializeDocument(File.ReadAllText(resolvedSource));
+            }
 
-            string extension = Path.GetExtension(resolvedSource);
-            if (string.IsNullOrWhiteSpace(extension))
-                extension = ".pdf";
-
-            string snapshotPath = Path.Combine(folder, "resume-snapshot" + extension);
-            File.Copy(resolvedSource, snapshotPath, true);
+            if (imported != null)
+                structuredJson = ResumeProfileService.SerializeDocument(imported);
 
             var selection = new ApplicationResumeSelection
             {
                 UserId = userId,
                 AppliedJobId = appliedJobId,
-                StoredResumePath = snapshotPath,
+                StoredResumePath = resolvedSource,
                 ResumeSource = resumeSource ?? string.Empty,
                 OriginalFileName = string.IsNullOrWhiteSpace(originalFileName) ? Path.GetFileName(resolvedSource) : originalFileName,
+                StructuredJson = structuredJson,
                 SavedAt = DateTime.UtcNow
             };
 
@@ -114,6 +121,7 @@ namespace IntelliJob
                 StoredResumePath = snapshotPath,
                 ResumeSource = resumeSource ?? string.Empty,
                 OriginalFileName = string.IsNullOrWhiteSpace(originalFileName) ? Path.GetFileName(postedFile.FileName) : originalFileName,
+                StructuredJson = string.Empty,
                 SavedAt = DateTime.UtcNow
             };
 
@@ -126,11 +134,11 @@ namespace IntelliJob
             if (document == null)
                 return null;
 
+            string structuredJson = ResumeProfileService.SerializeDocument(document);
             string folder = GetApplicationFolder(userId, appliedJobId);
             Directory.CreateDirectory(folder);
-
-            string snapshotPath = Path.Combine(folder, "resume-snapshot.txt");
-            File.WriteAllText(snapshotPath, BuildStructuredResumeText(document));
+            string snapshotPath = Path.Combine(folder, "resume-snapshot.json");
+            File.WriteAllText(snapshotPath, structuredJson);
 
             var selection = new ApplicationResumeSelection
             {
@@ -138,7 +146,8 @@ namespace IntelliJob
                 AppliedJobId = appliedJobId,
                 StoredResumePath = snapshotPath,
                 ResumeSource = resumeSource ?? string.Empty,
-                OriginalFileName = string.IsNullOrWhiteSpace(originalFileName) ? "enhanced-resume.txt" : originalFileName,
+                OriginalFileName = string.IsNullOrWhiteSpace(originalFileName) ? "enhanced-resume.json" : originalFileName,
+                StructuredJson = structuredJson,
                 SavedAt = DateTime.UtcNow
             };
 
@@ -177,11 +186,7 @@ namespace IntelliJob
             if (importResult == null || !importResult.IsSuccess || importResult.Document == null)
                 return null;
 
-            string snapshotPath = Path.Combine(folder, "resume-draft.txt");
-            File.WriteAllText(snapshotPath, BuildStructuredResumeText(importResult.Document));
-            TryDeleteFile(importResult.StoredPhysicalPath);
-
-            return SaveDraftRecord(userId, jobId, snapshotPath, resumeSource, originalFileName, importResult.Document, false);
+            return SaveDraftRecord(userId, jobId, importResult.StoredPhysicalPath, resumeSource, originalFileName, importResult.Document, false);
         }
 
         public static ApplicationResumeDraftRecord SaveApplicationResumeDraft(int userId, int jobId, ResumeProfileDocument document, string resumeSource, string originalFileName)
@@ -189,13 +194,7 @@ namespace IntelliJob
             if (document == null)
                 return null;
 
-            string folder = GetApplicationDraftFolder(userId, jobId);
-            Directory.CreateDirectory(folder);
-
-            string snapshotPath = Path.Combine(folder, "resume-draft.txt");
-            File.WriteAllText(snapshotPath, BuildStructuredResumeText(document));
-
-            return SaveDraftRecord(userId, jobId, snapshotPath, resumeSource, originalFileName, document, true);
+            return SaveDraftRecord(userId, jobId, GetApplicationDraftFilePath(userId, jobId), resumeSource, originalFileName, document, true);
         }
 
         public static bool TryGetApplicationResumeDraft(int userId, int jobId, out ApplicationResumeDraftRecord draft)
@@ -217,16 +216,129 @@ namespace IntelliJob
             }
         }
 
+        public static bool DeleteApplicationResumeDraft(int userId, int jobId, bool deleteStoredFile)
+        {
+            string folder = GetApplicationDraftFolder(userId, jobId);
+            ApplicationResumeDraftRecord draft;
+
+            if (!TryGetApplicationResumeDraft(userId, jobId, out draft))
+            {
+                if (!Directory.Exists(folder))
+                    return false;
+
+                try
+                {
+                    Directory.Delete(folder, true);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            if (deleteStoredFile && draft != null && !string.IsNullOrWhiteSpace(draft.StoredResumePath))
+            {
+                try
+                {
+                    if (File.Exists(draft.StoredResumePath))
+                        File.Delete(draft.StoredResumePath);
+                }
+                catch
+                {
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, true);
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    string draftFile = GetApplicationDraftFilePath(userId, jobId);
+                    if (File.Exists(draftFile))
+                        File.Delete(draftFile);
+                }
+                catch
+                {
+                }
+
+                return false;
+            }
+        }
+
+        public static void SetApplicationResumeProfileOnly(int userId, int jobId, bool profileOnly)
+        {
+            string lockFile = GetApplicationDraftLockFilePath(userId, jobId);
+            string folder = GetApplicationDraftFolder(userId, jobId);
+
+            if (profileOnly)
+            {
+                Directory.CreateDirectory(folder);
+                File.WriteAllText(lockFile, DateTime.UtcNow.ToString("O"));
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(lockFile))
+                    File.Delete(lockFile);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (Directory.Exists(folder) && !Directory.EnumerateFileSystemEntries(folder).Any())
+                    Directory.Delete(folder, true);
+            }
+            catch
+            {
+            }
+        }
+
+        public static bool IsApplicationResumeProfileOnly(int userId, int jobId)
+        {
+            return File.Exists(GetApplicationDraftLockFilePath(userId, jobId));
+        }
+
+        public static void ClearApplicationResumeState(int userId, int jobId)
+        {
+            DeleteApplicationResumeDraft(userId, jobId, deleteStoredFile: true);
+            SetApplicationResumeProfileOnly(userId, jobId, false);
+        }
+
         public static ApplicationResumeSelection FinalizeApplicationResumeDraft(int userId, int jobId, int appliedJobId)
         {
             ApplicationResumeDraftRecord draft;
             if (!TryGetApplicationResumeDraft(userId, jobId, out draft) || draft == null)
                 return null;
 
-            if (string.IsNullOrWhiteSpace(draft.StoredResumePath) || !File.Exists(draft.StoredResumePath))
-                return null;
+            return SaveApplicationResumeSelection(userId, appliedJobId, draft.StructuredJson, draft.ResumeSource, draft.OriginalFileName, draft.StoredResumePath);
+        }
 
-            return SaveApplicationResumeSelection(userId, appliedJobId, draft.StoredResumePath, draft.ResumeSource, draft.OriginalFileName);
+        public static ApplicationResumeSelection SaveApplicationResumeSelection(int userId, int appliedJobId, string structuredJson, string resumeSource, string originalFileName, string storedResumePath)
+        {
+            var selection = new ApplicationResumeSelection
+            {
+                UserId = userId,
+                AppliedJobId = appliedJobId,
+                StoredResumePath = storedResumePath ?? string.Empty,
+                ResumeSource = resumeSource ?? string.Empty,
+                OriginalFileName = string.IsNullOrWhiteSpace(originalFileName) ? string.Empty : originalFileName,
+                StructuredJson = structuredJson ?? string.Empty,
+                SavedAt = DateTime.UtcNow
+            };
+
+            string folder = GetApplicationFolder(userId, appliedJobId);
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(GetResumeSelectionFilePath(userId, appliedJobId), JsonConvert.SerializeObject(selection, Formatting.Indented));
+            return selection;
         }
 
         private static ApplicationResumeDraftRecord SaveDraftRecord(int userId, int jobId, string storedResumePath, string resumeSource, string originalFileName, ResumeProfileDocument document, bool isConfirmed)
@@ -250,27 +362,69 @@ namespace IntelliJob
             return draft;
         }
 
-        private static string BuildStructuredResumeText(ResumeProfileDocument document)
+        private static void AppendEducationEntries(StringBuilder builder, System.Collections.Generic.IEnumerable<ResumeEducationEntry> entries)
         {
-            if (document == null)
-                return string.Empty;
+            if (builder == null || entries == null)
+                return;
 
-            StringBuilder builder = new StringBuilder();
+            foreach (ResumeEducationEntry entry in entries.Where(item => item != null))
+            {
+                AppendSection(builder, "Education - " + (string.IsNullOrWhiteSpace(entry.SchoolName) ? "Entry" : entry.SchoolName),
+                    string.Join(Environment.NewLine, new[]
+                    {
+                        entry.Location,
+                        entry.Degree,
+                        FormatMonthYear(entry.StartMonth, entry.StartYear) + " - " + FormatMonthYear(entry.EndMonth, entry.EndYear),
+                        entry.Grade,
+                        entry.Coursework
+                    }.Where(value => !string.IsNullOrWhiteSpace(value))));
+            }
+        }
 
-            AppendSection(builder, "Full Name", document.FullName);
-            AppendSection(builder, "Email", document.Email);
-            AppendSection(builder, "Mobile", document.Mobile);
-            AppendSection(builder, "Address", document.Address);
-            AppendSection(builder, "Headline", document.Headline);
-            AppendSection(builder, "Summary", document.Summary);
-            AppendSection(builder, "Skills", JoinLines(document.Skills));
-            AppendSection(builder, "Education", JoinLines(document.Education));
-            AppendSection(builder, "Experience", JoinLines(document.Experience));
-            AppendSection(builder, "Projects", JoinLines(document.Projects));
-            AppendSection(builder, "Certifications", JoinLines(document.Certifications));
-            AppendSection(builder, "Languages", JoinLines(document.Languages));
+        private static void AppendExperienceEntries(StringBuilder builder, System.Collections.Generic.IEnumerable<ResumeExperienceEntry> entries)
+        {
+            if (builder == null || entries == null)
+                return;
 
-            return builder.ToString().Trim();
+            foreach (ResumeExperienceEntry entry in entries.Where(item => item != null))
+            {
+                var details = new StringBuilder();
+                AppendSection(details, "Company", entry.Company);
+                AppendSection(details, "Location", entry.Location);
+                AppendSection(details, "Period", FormatMonthYear(entry.StartMonth, entry.StartYear) + " - " + (entry.IsCurrent ? "Present" : FormatMonthYear(entry.EndMonth, entry.EndYear)));
+                if (entry.Bullets != null && entry.Bullets.Count > 0)
+                    AppendSection(details, "Description", JoinLines(entry.Bullets));
+
+                AppendSection(builder, "Experience - " + (string.IsNullOrWhiteSpace(entry.JobTitle) ? "Entry" : entry.JobTitle), details.ToString().Trim());
+            }
+        }
+
+        private static void AppendProjectEntries(StringBuilder builder, System.Collections.Generic.IEnumerable<ResumeProjectEntry> entries)
+        {
+            if (builder == null || entries == null)
+                return;
+
+            foreach (ResumeProjectEntry entry in entries.Where(item => item != null))
+            {
+                AppendSection(builder, "Project - " + (string.IsNullOrWhiteSpace(entry.ProjectTitle) ? "Entry" : entry.ProjectTitle),
+                    string.Join(Environment.NewLine, new[]
+                    {
+                        JoinCommaSeparated(entry.TechStack),
+                        entry.Description
+                    }.Where(value => !string.IsNullOrWhiteSpace(value))));
+            }
+        }
+
+        private static void AppendSkillGroups(StringBuilder builder, ResumeSkillGroups skillGroups)
+        {
+            if (builder == null || skillGroups == null)
+                return;
+
+            AppendSection(builder, "Programming Languages", JoinCommaSeparated(skillGroups.ProgrammingLanguages));
+            AppendSection(builder, "Frameworks/Libraries", JoinCommaSeparated(skillGroups.FrameworksLibraries));
+            AppendSection(builder, "Tools/Cloud/Database Skills", JoinCommaSeparated(skillGroups.ToolsCloudDatabaseSkills));
+            AppendSection(builder, "Soft Skills/Languages", JoinCommaSeparated(skillGroups.SoftSkillsLanguages));
+            AppendSection(builder, string.IsNullOrWhiteSpace(skillGroups.CustomHeading) ? "Custom Skills" : skillGroups.CustomHeading, JoinCommaSeparated(skillGroups.CustomItems));
         }
 
         private static void AppendSection(StringBuilder builder, string heading, string content)
@@ -303,6 +457,28 @@ namespace IntelliJob
             return builder.ToString().Trim();
         }
 
+        private static string JoinCommaSeparated(System.Collections.Generic.IEnumerable<string> values)
+        {
+            if (values == null)
+                return string.Empty;
+
+            return string.Join(", ", values.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()));
+        }
+
+        private static string FormatMonthYear(int? month, int? year)
+        {
+            if (!month.HasValue && !year.HasValue)
+                return string.Empty;
+
+            if (!month.HasValue)
+                return year.HasValue ? year.Value.ToString() : string.Empty;
+
+            if (!year.HasValue)
+                return month.Value.ToString();
+
+            return month.Value.ToString("00") + "/" + year.Value;
+        }
+
         private static void TryDeleteFile(string physicalPath)
         {
             try
@@ -323,6 +499,12 @@ namespace IntelliJob
             string folder = GetApplicationFolder(report.UserId, report.AppliedJobId);
             Directory.CreateDirectory(folder);
             File.WriteAllText(GetReportFilePath(report.UserId, report.AppliedJobId), JsonConvert.SerializeObject(report, Formatting.Indented));
+
+            string enhancedPath = Path.Combine(folder, "enhanced-resume.json");
+            if (!string.IsNullOrWhiteSpace(report.UpdatedResumeStructuredJson))
+                File.WriteAllText(enhancedPath, report.UpdatedResumeStructuredJson);
+            else
+                TryDeleteFile(enhancedPath);
         }
 
         public static bool TryGetResumeEnhancementReport(int userId, int appliedJobId, out ResumeEnhancementReportRecord report)
@@ -342,6 +524,12 @@ namespace IntelliJob
                 report = null;
                 return false;
             }
+        }
+
+        public static void DeleteResumeEnhancementReport(int userId, int appliedJobId)
+        {
+            string path = GetReportFilePath(userId, appliedJobId);
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
     }
 }

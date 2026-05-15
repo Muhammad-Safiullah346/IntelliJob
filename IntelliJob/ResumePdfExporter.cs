@@ -74,13 +74,38 @@ namespace IntelliJob
             double y   = PageHeight - TopMargin;
 
             // Estimate text width: Times-Roman avg char ≈ 0.5 * fontSize
-            Func<string, int, double> tw = (t, s) => (t ?? "").Length * s * 0.5;
+            Func<string, int, double> tw = (t, s) => (t ?? "").Replace("*", "").Replace("_", "").Length * s * 0.5;
 
-            // Append a PDF text-show operator
-            Action<string, double, double, bool, int> wt = (txt, x, ty, bold, sz) =>
-                sb.AppendFormat(CultureInfo.InvariantCulture,
-                    "BT /{0} {1} Tf 1 0 0 1 {2:0.##} {3:0.##} Tm ({4}) Tj ET\n",
-                    bold ? "F2" : "F1", sz, x, ty, EscapePdfText(txt));
+            // Append a PDF text-show operator with inline bold/italic parsing
+            Action<string, double, double, bool, int> wt = (txt, x, ty, forceBold, sz) =>
+            {
+                var res = new StringBuilder();
+                bool isBold = forceBold, isItalic = false;
+                
+                Func<string> currentFont = () => {
+                    if (isBold && isItalic) return "F4";
+                    if (isBold) return "F2";
+                    if (isItalic) return "F3";
+                    return "F1";
+                };
+                
+                res.AppendFormat(CultureInfo.InvariantCulture, "/{0} {1} Tf (", currentFont(), sz);
+                for (int i = 0; i < txt.Length; i++) {
+                    char c = txt[i];
+                    if (c == '*' || c == '_') {
+                        res.Append(") Tj ");
+                        if (c == '*') isBold = !isBold;
+                        if (c == '_') isItalic = !isItalic;
+                        res.AppendFormat(CultureInfo.InvariantCulture, "/{0} {1} Tf (", currentFont(), sz);
+                    } else {
+                        if (c == '(' || c == ')' || c == '\\') res.Append('\\');
+                        res.Append(c);
+                    }
+                }
+                res.Append(") Tj");
+                
+                sb.AppendFormat(CultureInfo.InvariantCulture, "BT 1 0 0 1 {0:0.##} {1:0.##} Tm {2} ET\n", x, ty, res.ToString());
+            };
 
             // Draw a full-width horizontal rule at y-coordinate ry
             Action<double> hRule = ry =>
@@ -130,57 +155,80 @@ namespace IntelliJob
                 const string SEP = "  |  ";
                 double sepW = tw(SEP, BS);
 
-                // Measure total width first so we can center
-                double tot = 0;
-                for (int i = 0; i < cItems.Count; i++)
+                var lines = new List<List<string[]>>();
+                var currLine = new List<string[]>();
+                double currW = 0;
+
+                foreach (var item in cItems)
                 {
-                    if (i > 0) tot += sepW;
-                    if (imgRgb.ContainsKey(cItems[i][0])) tot += ICON + IGAP;
-                    tot += tw(cItems[i][1], BS);
-                }
+                    double itemW = tw(item[1], BS);
+                    if (imgRgb.ContainsKey(item[0])) itemW += ICON + IGAP;
 
-                double cx = LeftMargin + (CW - tot) / 2.0;
-                if (cx < LeftMargin) cx = LeftMargin;
-
-                for (int i = 0; i < cItems.Count; i++)
-                {
-                    if (i > 0) { wt(SEP, cx, y, false, BS); cx += sepW; }
-
-                    string icon = cItems[i][0];
-                    string disp = cItems[i][1];
-                    string url  = cItems[i][2];
-
-                    if (imgRgb.ContainsKey(icon))
+                    if (currLine.Count > 0 && currW + sepW + itemW > CW)
                     {
-                        string ikey = icon.Replace(".png", "").Replace("_", "");
-                        sb.AppendFormat(CultureInfo.InvariantCulture,
-                            "q {0:0.##} 0 0 {0:0.##} {1:0.##} {2:0.##} cm /{3} Do Q\n",
-                            ICON, cx, y - 1.5, ikey);
-                        cx += ICON + IGAP;
+                        lines.Add(currLine);
+                        currLine = new List<string[]>();
+                        currW = 0;
                     }
 
-                    double dtw = tw(disp, BS);
-                    wt(disp, cx, y, false, BS);
-
-                    if (!string.IsNullOrWhiteSpace(url))
-                        annots.Add(new PdfLinkAnnotation
-                            { X = cx, Y = y - 2, Width = dtw, Height = BS + 2, Url = url });
-
-                    cx += dtw;
+                    if (currLine.Count > 0) currW += sepW;
+                    currW += itemW;
+                    currLine.Add(item);
                 }
-                y -= BS * 1.5;
+                if (currLine.Count > 0) lines.Add(currLine);
+
+                foreach (var line in lines)
+                {
+                    double tot = 0;
+                    for (int i = 0; i < line.Count; i++)
+                    {
+                        if (i > 0) tot += sepW;
+                        if (imgRgb.ContainsKey(line[i][0])) tot += ICON + IGAP;
+                        tot += tw(line[i][1], BS);
+                    }
+
+                    double cx = LeftMargin + (CW - tot) / 2.0;
+                    if (cx < LeftMargin) cx = LeftMargin;
+
+                    for (int i = 0; i < line.Count; i++)
+                    {
+                        if (i > 0) { wt(SEP, cx, y, false, BS); cx += sepW; }
+
+                        string icon = line[i][0];
+                        string disp = line[i][1];
+                        string url  = line[i][2];
+
+                        if (imgRgb.ContainsKey(icon))
+                        {
+                            string ikey = icon.Replace(".png", "").Replace("_", "");
+                            sb.AppendFormat(CultureInfo.InvariantCulture,
+                                "q {0:0.##} 0 0 {0:0.##} {1:0.##} {2:0.##} cm /{3} Do Q\n",
+                                ICON, cx, y - 1.5, ikey);
+                            cx += ICON + IGAP;
+                        }
+
+                        double dtw = tw(disp, BS);
+                        wt(disp, cx, y, false, BS);
+
+                        if (!string.IsNullOrWhiteSpace(url))
+                            annots.Add(new PdfLinkAnnotation
+                                { X = cx, Y = y - 2, Width = dtw, Height = BS + 2, Url = url });
+
+                        cx += dtw;
+                    }
+                    y -= BS * 1.5;
+                }
             }
 
-            // Thin rule under contact header
-            hRule(y);
             y -= 7;
 
-            // ── SECTION HEADING: uppercase bold 12pt + rule ──
+            // ── SECTION HEADING: Title Case bold 12pt + rule ──
             Action<string> sec = title =>
             {
                 if (y < BottomMargin + 20) return;
                 y -= 5;
-                wt(title.ToUpperInvariant(), LeftMargin, y, true, HS);
+                string tcTitle = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(title.ToLowerInvariant());
+                wt(tcTitle, LeftMargin, y, true, HS);
                 y -= 4;
                 hRule(y);
                 y -= HS * 0.85;
@@ -285,8 +333,7 @@ namespace IntelliJob
             if (doc.Skills != null && doc.Skills.Any(x => !string.IsNullOrWhiteSpace(x)))
             {
                 sec("Skills");
-                foreach (var e in doc.Skills.Where(x => !string.IsNullOrWhiteSpace(x)))
-                    skillLine(e);
+                para(string.Join(", ", doc.Skills.Where(x => !string.IsNullOrWhiteSpace(x))));
             }
 
             if (doc.Certifications != null && doc.Certifications.Any(x => !string.IsNullOrWhiteSpace(x)))
@@ -346,6 +393,14 @@ namespace IntelliJob
 
             // obj 4: Times-Bold
             addObj("<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold " +
+                   "/Encoding /WinAnsiEncoding >>");
+
+            // obj 5: Times-Italic
+            addObj("<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic " +
+                   "/Encoding /WinAnsiEncoding >>");
+
+            // obj 6: Times-BoldItalic
+            addObj("<< /Type /Font /Subtype /Type1 /BaseFont /Times-BoldItalic " +
                    "/Encoding /WinAnsiEncoding >>");
 
             // Image XObjects (SMask first, then RGB)
@@ -433,7 +488,7 @@ namespace IntelliJob
             string pageDict = string.Format(CultureInfo.InvariantCulture,
                 "<< /Type /Page /Parent 2 0 R" +
                 " /MediaBox [0 0 {0} {1}]" +
-                " /Resources << /Font << /F1 3 0 R /F2 4 0 R >> {2} >>" +
+                " /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> {2} >>" +
                 " /Contents {3} 0 R {4} >>",
                 PageWidth, PageHeight, xres, contentObjNum, annotArr);
             addObj(pageDict);
@@ -573,11 +628,12 @@ namespace IntelliJob
             string[] words = text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (words.Length == 0) return new[] { string.Empty };
 
+            Func<string, int> cleanLen = s => s.Count(c => c != '*' && c != '_');
             var cur = new StringBuilder();
             foreach (string word in words)
             {
                 if (cur.Length == 0) { cur.Append(word); continue; }
-                if (cur.Length + 1 + word.Length <= maxChars)
+                if (cleanLen(cur.ToString()) + 1 + cleanLen(word) <= maxChars)
                 { cur.Append(' ').Append(word); continue; }
                 lines.Add(cur.ToString());
                 cur.Clear();

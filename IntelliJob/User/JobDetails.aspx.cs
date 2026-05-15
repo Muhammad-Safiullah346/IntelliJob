@@ -62,6 +62,29 @@ namespace IntelliJob.User
 
         protected void DataList1_ItemCommand(object source, DataListCommandEventArgs e)
         {
+            if (e.CommandName == "DeleteAndUseProfileResume")
+            {
+                if (Session["user"] == null)
+                {
+                    Response.Redirect("Login.aspx");
+                    return;
+                }
+
+                int userId = Convert.ToInt32(Session["userId"]);
+                int jobId = Convert.ToInt32(Request.QueryString["id"]);
+
+                bool removed = ApplicationDataStore.DeleteApplicationResumeDraft(userId, jobId, deleteStoredFile: true);
+                ApplicationDataStore.SetApplicationResumeProfileOnly(userId, jobId, true);
+
+                if (!removed)
+                    ShowJobMessage("Profile resume is now locked for this application, but existing draft cleanup could not be completed fully.", false);
+                else
+                    ShowJobMessage("Application draft removed. Your profile resume will be used and job-specific resume upload is now disabled for this job.", true);
+
+                showjobDetails();
+                return;
+            }
+
             if (e.CommandName == "SaveApplicationResume")
             {
                 if (Session["user"] == null)
@@ -74,6 +97,12 @@ namespace IntelliJob.User
                 {
                     int userId = Convert.ToInt32(Session["userId"]);
                     int jobId = Convert.ToInt32(Request.QueryString["id"]);
+                    if (ApplicationDataStore.IsApplicationResumeProfileOnly(userId, jobId))
+                    {
+                        ShowJobMessage("Profile resume is locked for this application. Job-specific resume upload is disabled.", false);
+                        return;
+                    }
+
                     FileUpload fuApplicationResume = e.Item.FindControl("fuApplicationResume") as FileUpload;
                     if (fuApplicationResume == null || !fuApplicationResume.HasFile)
                     {
@@ -100,6 +129,7 @@ namespace IntelliJob.User
                         return;
                     }
 
+                    ApplicationDataStore.SetApplicationResumeProfileOnly(userId, jobId, false);
                     Response.Redirect("ApplicationResumeBuild.aspx?jobId=" + jobId, false);
                     return;
                 }
@@ -126,8 +156,8 @@ namespace IntelliJob.User
                             return;
                         }
 
-                        string profileResumePath = GetCurrentProfileResumePath(userId);
-                        if (applicationDraft == null && string.IsNullOrWhiteSpace(profileResumePath))
+                        ResumeProfileDocument profileDocument = GetCurrentProfileResumeDocument(userId);
+                        if (applicationDraft == null && profileDocument == null)
                         {
                             ShowJobMessage("Please upload a resume in your profile or attach one while applying.", false);
                             return;
@@ -173,7 +203,7 @@ namespace IntelliJob.User
                                 }
                                 else
                                 {
-                                    selection = ApplicationDataStore.SaveApplicationResumeSelection(userId, appliedJobId, profileResumePath, "profile", Path.GetFileName(profileResumePath));
+                                    selection = ApplicationDataStore.SaveApplicationResumeSelection(userId, appliedJobId, profileDocument, "profile", profileDocument != null && profileDocument.Metadata != null && !string.IsNullOrWhiteSpace(profileDocument.Metadata.OriginalFileName) ? profileDocument.Metadata.OriginalFileName : "profile-resume.json");
                                 }
 
                                 if (selection == null || string.IsNullOrWhiteSpace(selection.StoredResumePath))
@@ -242,7 +272,7 @@ namespace IntelliJob.User
                     else
                     {
                         btnApplyJob.Text = "Apply Now";
-                        btnApplyJob.OnClientClick = "if(!confirm('Are you sure you want to apply for this job?')) return false; this.style.pointerEvents='none'; this.innerHTML='Applying...';";
+                        btnApplyJob.OnClientClick = "if(!confirm('Please confirm your resume before applying. Once this job is applied, you will not be able to edit the application resume. Continue?')) return false; this.style.pointerEvents='none'; this.innerHTML='Applying...';";
                     }
                 }
 
@@ -254,17 +284,18 @@ namespace IntelliJob.User
                     int userId = Convert.ToInt32(Session["userId"]);
                     int jobId = Convert.ToInt32(Request.QueryString["id"]);
                     ApplicationResumeDraftRecord draft = GetApplicationResumeDraft(userId, jobId);
+                    bool profileOnlyLock = ApplicationDataStore.IsApplicationResumeProfileOnly(userId, jobId);
                     bool hasDraft = draft != null && !string.IsNullOrWhiteSpace(draft.StoredResumePath) && File.Exists(draft.StoredResumePath);
                     bool applied = isApplied();
 
                     if (pnlApplicationResumeUpload != null)
-                        pnlApplicationResumeUpload.Visible = !applied && !hasDraft;
+                        pnlApplicationResumeUpload.Visible = !applied && !hasDraft && !profileOnlyLock;
 
                     if (pnlApplicationResumeEdit != null)
                         pnlApplicationResumeEdit.Visible = !applied && hasDraft;
 
                     if (pnlAppliedResumeEdit != null)
-                        pnlAppliedResumeEdit.Visible = applied;
+                        pnlAppliedResumeEdit.Visible = false;
                 }
             }
         }
@@ -335,18 +366,28 @@ namespace IntelliJob.User
             return ResolveUrl("~/Images/No_image.png");
         }
 
-        private string GetCurrentProfileResumePath(int userId)
+        private ResumeProfileDocument GetCurrentProfileResumeDocument(int userId)
         {
             using (SqlConnection c = new SqlConnection(str))
-            using (SqlCommand cm = new SqlCommand("SELECT Resume FROM JobSeekers WHERE ProfileId = @UserId", c))
+            using (SqlCommand cm = new SqlCommand("SELECT ResumeStructuredJson, Resume FROM JobSeekers WHERE ProfileId = @UserId", c))
             {
                 cm.Parameters.AddWithValue("@UserId", userId);
                 c.Open();
-                object result = cm.ExecuteScalar();
-                if (result == null || result == DBNull.Value)
-                    return string.Empty;
+                using (SqlDataReader reader = cm.ExecuteReader())
+                {
+                    if (!reader.Read())
+                        return null;
 
-                return result.ToString();
+                    string structuredJson = reader["ResumeStructuredJson"] != DBNull.Value ? reader["ResumeStructuredJson"].ToString() : string.Empty;
+                    if (!string.IsNullOrWhiteSpace(structuredJson))
+                        return ResumeProfileService.DeserializeDocument(structuredJson);
+
+                    string resumePath = reader["Resume"] != DBNull.Value ? reader["Resume"].ToString() : string.Empty;
+                    if (!string.IsNullOrWhiteSpace(resumePath) && File.Exists(resumePath))
+                        return ResumeProfileService.DeserializeDocument(File.ReadAllText(resumePath));
+                }
+
+                return null;
             }
         }
 
@@ -387,33 +428,36 @@ namespace IntelliJob.User
             if (!table.Columns.Contains("AppliedResumeNote"))
                 table.Columns.Add("AppliedResumeNote", typeof(string));
 
+            if (!table.Columns.Contains("ApplicationResumeProfileOnly"))
+                table.Columns.Add("ApplicationResumeProfileOnly", typeof(bool));
+
             int userId = Session["userId"] != null ? Convert.ToInt32(Session["userId"]) : 0;
             int jobId = Convert.ToInt32(table.Rows[0]["JobId"]);
             ApplicationResumeDraftRecord draft = userId > 0 ? GetApplicationResumeDraft(userId, jobId) : null;
             bool isApplied = userId > 0 && IsAppliedForJob(userId, jobId);
+            bool profileOnlyLock = userId > 0 && ApplicationDataStore.IsApplicationResumeProfileOnly(userId, jobId);
             bool hasDraft = draft != null;
             string editUrl = hasDraft ? ResolveUrl("~/User/ApplicationResumeBuild.aspx?jobId=" + jobId) : string.Empty;
             string note = hasDraft
                 ? (draft.IsConfirmed
                     ? "Your application resume draft is confirmed. Use Edit Resume if you want to change it again."
                     : "Your application resume draft is ready. Use Edit Resume to update it, then confirm it before applying.")
-                : "Upload once to create an editable application resume draft. If you skip this, your profile resume will be used.";
-            string appliedEditUrl = isApplied
-                ? (hasDraft ? ResolveUrl("~/User/ApplicationResumeBuild.aspx?jobId=" + jobId) : ResolveUrl("~/User/Profile.aspx"))
-                : string.Empty;
-            string appliedNote = isApplied
-                ? "Your profile resume was sent with this application. You can update it from your profile."
-                : string.Empty;
+                : (profileOnlyLock
+                    ? "Your profile resume is locked for this job application. Job-specific resume upload is disabled."
+                    : "Upload once to create an editable application resume draft. If you skip this, your profile resume will be used.");
+            string appliedEditUrl = string.Empty;
+            string appliedNote = string.Empty;
 
             foreach (DataRow row in table.Rows)
             {
                 row["HasApplicationResumeDraft"] = hasDraft && !isApplied;
-                row["ShowApplicationResumeUpload"] = !isApplied && !hasDraft;
+                row["ShowApplicationResumeUpload"] = !isApplied && !hasDraft && !profileOnlyLock;
                 row["ApplicationResumeEditUrl"] = editUrl;
                 row["ApplicationResumeNote"] = isApplied ? string.Empty : note;
-                row["ShowAppliedResumeEdit"] = isApplied;
+                row["ShowAppliedResumeEdit"] = false;
                 row["AppliedResumeEditUrl"] = appliedEditUrl;
                 row["AppliedResumeNote"] = appliedNote;
+                row["ApplicationResumeProfileOnly"] = profileOnlyLock;
             }
         }
 
@@ -497,7 +541,13 @@ namespace IntelliJob.User
             ApplicationResumeSelection selection;
             if (ApplicationDataStore.TryGetApplicationResumeSelection(ctx.UserId, ctx.AppliedJobId, out selection))
             {
-                if (System.IO.File.Exists(selection.StoredResumePath))
+                if (!string.IsNullOrWhiteSpace(selection.StructuredJson))
+                {
+                    ResumeProfileDocument document = ResumeProfileService.DeserializeDocument(selection.StructuredJson);
+                    if (document != null)
+                        resumeText = ResumeProfileService.BuildResumeText(document);
+                }
+                else if (System.IO.File.Exists(selection.StoredResumePath))
                 {
                     resumeText = ResumeTextExtractor.ExtractText(selection.StoredResumePath);
                 }
@@ -544,7 +594,7 @@ namespace IntelliJob.User
             smtp.Port = smtpPort;
             smtp.EnableSsl = true;
             smtp.Credentials = new NetworkCredential(smtpUser, smtpPass);
-            // smtp.Send(mail); // Disabled for local/testing use to avoid sending emails.
+            smtp.Send(mail);
         }
 
         private JobApplicationContext LoadJobApplicationContext(int appliedJobId, int userId)
@@ -554,8 +604,7 @@ namespace IntelliJob.User
                 string q = @"SELECT aj.AppliedJobId, aj.JobId, aj.UserId,
                                     j.Title, j.Experience AS JobExperience, j.Specialization, j.Description, j.Qualification, j.JobType, j.CompanyName,
                                     u.Email, u.Username,
-                                    js.Name, js.WorksOn, js.Experience AS CandidateExperience,
-                                    js.TenthGrade, js.TwelfthGrade, js.GraduationGrade, js.PostGraduationGrade, js.Phd, js.Resume
+                                    js.Name, js.Resume
                              FROM AppliedJobs aj
                              INNER JOIN Jobs j ON aj.JobId = j.JobId
                              INNER JOIN Users u ON aj.UserId = u.UserId

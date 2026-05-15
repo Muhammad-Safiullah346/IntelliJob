@@ -1,5 +1,16 @@
 Development Log
 Each line records one short file change.
+IntelliJob/User/Home.aspx: fixed company logo path from hardcoded relative path to use GetImageUrl method.
+IntelliJob/User/Home.aspx.cs: added GetImageUrl method to resolve company logo paths with fallback candidates and file existence checks.
+IntelliJob/User/JobApplications.aspx.cs: upgraded GetImageUrl to use robust path resolution with multiple candidate paths and file existence verification.
+IntelliJob/ResumeProfileService.cs: added exact camelCase JSON serialization/deserialization and public BuildResumeText() helper for structured JSON to prompt text conversion.
+IntelliJob/ApplicationDataStore.cs: stopped writing .txt snapshot files and now stores only JSON in application resume selections and drafts.
+IntelliJob/User/JobDetails.aspx.cs: switched profile resume resolution to use StructuredJson via DeserializeDocument and BuildResumeText.
+IntelliJob/User/Interview.aspx.cs: updated GetProfileResumeText to read from ResumeStructuredJson first, using BuildResumeText for prompt generation.
+IntelliJob/User/ResumeEnhancer.aspx.cs: replaced file-based text extraction with structured JSON deserialization and BuildResumeText, removed local BuildStructuredResumeText helper methods, changed enhanced profile resume storage from .txt to .json.
+IntelliJob/User/ApplicationResumeBuild.aspx.cs: removed legacy fallback to ParseExistingResume for application drafts, now uses only StructuredJson.
+IntelliJob/Company/ShorlistedCandidates.aspx.cs: switched to read ApplicationResumeSelection.StructuredJson and use BuildResumeText for question generation.
+IntelliJob/User/ResumeEnhancer.aspx, IntelliJob/User/ResumeEnhancer.aspx.cs, IntelliJob/ResumePreview.html: added a separate raw-JSON HTML resume preview path with its own PDF download button.
 IntelliJob/GeminiService.cs: added updated resume rewrite output to the resume enhancer response.
 IntelliJob/ApplicationDataStore.cs: added application snapshot and saved report storage.
 IntelliJob/Models/ResumeEnhancementModels.cs: added saved report and application resume selection models.
@@ -58,3 +69,30 @@ IntelliJob/User/ResumeEnhancer.aspx.cs: confirmed enhancement uses specific appl
 IntelliJob/User/ResumeEnhancer.aspx, IntelliJob/User/ResumeEnhancer.aspx.cs: replaced plain score texts with SVG Score Circle visual components for overall, ATS, semantic, and keyword matches.
 IntelliJob/User/InterviewFeedback.aspx, IntelliJob/User/InterviewFeedback.aspx.cs: replaced plain progress bars with SVG Score Gauge components for categorical performance scores.
 IntelliJob/User/TakeInterview.aspx: added a fallback Text Chat mode to allow users to conduct interviews sequentially via text without using VAPI tokens, seamlessly hooking into the existing transcript submission flow.
+IntelliJob/Models/ResumeProfileModels.cs, IntelliJob/ResumeProfileService.cs: added a canonical nested resume schema while preserving legacy flat resume fields.
+IntelliJob/User/Profile.aspx, IntelliJob/User/Profile.aspx.cs, IntelliJob/User/Profile.aspx.designer.cs: added an inline profile editor and separated the profile edit action from resume editing.
+IntelliJob/User/ProfileEdit.aspx, IntelliJob/User/ProfileEdit.aspx.cs, IntelliJob/User/ProfileEdit.aspx.designer.cs, IntelliJob/IntelliJob.csproj: added a dedicated profile editor page.
+IntelliJob/User/ResumeBuild.aspx: hid the legacy identity fields and focused the builder on structured resume sections.
+IntelliJob/User/Profile.aspx.cs, IntelliJob/User/ProfileEdit.aspx.cs: kept the logged-in username in sync after profile edits.
+IntelliJob/User/ResumeBuild.aspx.cs: removed profile-row writes so the resume builder saves resume data only.
+MY_RESUME/Resume_Structure_Optimization.md: added a non-destructive SSMS migration draft for the canonical resume storage split.
+IntelliJob/ResumeProfileService.cs: parsed imported resumes into detailed education, experience, project, and skill structures.
+IntelliJob/ApplicationDataStore.cs, IntelliJob/User/ResumeEnhancer.aspx.cs: saved structured resume snapshots with the richer nested sections.
+IntelliJob/User/Profile.aspx: changed profile editing to an inline same-page toggle.
+IntelliJob/User/ApplicationResumeBuild.aspx: added a structured resume confirmation disclaimer.
+IntelliJob/GeminiService.cs: updated interview and resume prompts to prefer structured resume sections and stronger experience/project entries.
+IntelliJob/User/ResumeBuild.aspx and IntelliJob/User/ApplicationResumeBuild.aspx: refreshed the visible resume editors with structured section cards and guidance.
+IntelliJob/User/Profile.aspx: replaced the inline profile editor with the full ProfileEdit-style layout and hide/show mode switch.
+IntelliJob/User/ResumeBuild.aspx.cs and IntelliJob/User/ApplicationResumeBuild.aspx.cs: upgraded resume save/load paths to preserve structured education, experience, project, and skill groups.
+IntelliJob/ResumeProfileService.cs: switched saved resume JSON to the canonical nested schema and removed headline from the resume flow.
+IntelliJob/User/ResumeBuild.aspx and IntelliJob/User/ApplicationResumeBuild.aspx: replaced the flat resume inputs with structured education, experience, project, and skill cards.
+IntelliJob/User/ResumeBuild.aspx.cs: added the structured card parsing and helper methods needed by the new resume form.
+IntelliJob/User/ResumeBuild.aspx, IntelliJob/User/ApplicationResumeBuild.aspx: switched repeated resume cards to Add button reveal mode.
+IntelliJob/ResumeProfileService.cs, IntelliJob/GeminiService.cs: improved structured resume parsing and stronger one-page enhancement instructions.
+IntelliJob/User/ResumeBuild.aspx, IntelliJob/User/ApplicationResumeBuild.aspx: hid non-initial cards by default so they reveal one by one.
+IntelliJob/App_Data/*.json: validated all saved resume draft and artifact JSON files.
+IntelliJob/User/JobDetails.aspx, IntelliJob/User/JobDetails.aspx.cs, IntelliJob/ApplicationDataStore.cs: added resume draft delete/profile-only lock helpers and aligned the apply confirmation copy.
+IntelliJob/ResumeProfileService.cs, IntelliJob/User/Register.aspx.cs, IntelliJob/User/ProfileEdit.aspx.cs, IntelliJob/User/ResumeEnhancer.aspx.cs, IntelliJob/User/ResumeBuild.aspx.cs, IntelliJob/User/Profile.aspx.cs: removed legacy flat resume-column writes and reads in favor of the canonical structured resume path.
+IntelliJob/App_Data/IntelliJob_Tables.sql: added the final commented DROP COLUMN migration for the deprecated flat resume columns.
+IntelliJob/User/ResumeBuild.aspx: restored the first visible cards and added localStorage-backed card reveal state for education, experience, and projects.
+IntelliJob/Company/ViewApplications.aspx, IntelliJob/Company/ViewApplications.aspx.cs: added interview, resume suitability, and total score columns; moved shortlist to the end and renamed delete to reject application.

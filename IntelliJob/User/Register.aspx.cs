@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Data.SqlClient;
@@ -112,20 +112,13 @@ namespace IntelliJob.User
                         int newUserId = Convert.ToInt32(userCmd.ExecuteScalar());
 
                         // 2) Insert into JOBSEEKERS (child table)
-                        string jsSql = @"INSERT INTO JobSeekers (ProfileId, Name, Mobile, TenthGrade, TwelfthGrade, GraduationGrade, PostGraduationGrade, Phd, WorksOn, Experience, Photo, Resume, ResumeOriginalFileName, ResumeParseStatus, ResumeValidationMessage, ResumeUploadedAt, ResumeParsedAt, ResumeStructuredJson, ResumeRawText, ResumeHeadline, ResumeSummary, ResumeSkills, ResumeEducation, ResumeExperienceDetails, ResumeProjects, ResumeCertifications, ResumeLanguages)
-                                        VALUES (@ProfileId, @Name, @Mobile, @TenthGrade, @TwelfthGrade, @GraduationGrade, @PostGraduationGrade, @Phd, @WorksOn, @Experience, @Photo, @Resume, @ResumeOriginalFileName, @ResumeParseStatus, @ResumeValidationMessage, @ResumeUploadedAt, @ResumeParsedAt, @ResumeStructuredJson, @ResumeRawText, @ResumeHeadline, @ResumeSummary, @ResumeSkills, @ResumeEducation, @ResumeExperienceDetails, @ResumeProjects, @ResumeCertifications, @ResumeLanguages)";
+                        string jsSql = @"INSERT INTO JobSeekers (ProfileId, Name, Mobile, Photo, Resume, ResumeOriginalFileName, ResumeParseStatus, ResumeValidationMessage, ResumeUploadedAt, ResumeParsedAt, ResumeStructuredJson, ResumeRawText)
+                                        VALUES (@ProfileId, @Name, @Mobile, @Photo, @Resume, @ResumeOriginalFileName, @ResumeParseStatus, @ResumeValidationMessage, @ResumeUploadedAt, @ResumeParsedAt, @ResumeStructuredJson, @ResumeRawText)";
 
                         SqlCommand jsCmd = new SqlCommand(jsSql, con, tran);
                         jsCmd.Parameters.AddWithValue("@ProfileId", newUserId);
                         jsCmd.Parameters.AddWithValue("@Name", txtName.Text.Trim());
                         jsCmd.Parameters.AddWithValue("@Mobile", txtMobile.Text.Trim());
-                        jsCmd.Parameters.AddWithValue("@TenthGrade", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@TwelfthGrade", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@GraduationGrade", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@PostGraduationGrade", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@Phd", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@WorksOn", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
-                        jsCmd.Parameters.AddWithValue("@Experience", string.IsNullOrWhiteSpace(string.Empty) ? (object)DBNull.Value : DBNull.Value);
                         jsCmd.Parameters.AddWithValue("@Photo", photoFileName);
                         jsCmd.Parameters.AddWithValue("@Resume", string.IsNullOrWhiteSpace(resumeFilePath) ? (object)DBNull.Value : resumeFilePath);
 
